@@ -1,5 +1,6 @@
 import httpx
 
+from app.core.memory import memory_manager
 from app.skills.base import Skill
 
 
@@ -8,15 +9,26 @@ class AISkill(Skill):
     MODEL = "llama3.2:3b"
 
     def can_handle(self, command: str) -> bool:
-        # AI is the fallback skill.
         return bool(command.strip())
 
     def execute(self, command: str) -> str:
+        memories = memory_manager.get_recent_memories(limit=10)
+
+        memory_context = "\n".join(
+            f"- {memory}"
+            for memory in memories
+        )
+
         prompt = f"""
 You are JARVIS, a concise personal AI assistant.
 
+Relevant memory:
+{memory_context if memory_context else "- No saved memory yet."}
+
 Rules:
 - Answer clearly and briefly.
+- Use saved memory when relevant.
+- Do not invent memories.
 - Do not pretend you performed an action unless a JARVIS skill actually performed it.
 - If asked who you are, identify yourself as JARVIS.
 - Be useful and practical.
@@ -39,7 +51,6 @@ JARVIS:
             response.raise_for_status()
 
             data = response.json()
-
             answer = data.get("response", "").strip()
 
             if not answer:

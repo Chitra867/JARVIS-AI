@@ -1,6 +1,7 @@
 from app.skills.ai_skill import AISkill
 from app.skills.app_launcher_skill import AppLauncherSkill
 from app.skills.base import Skill
+from app.skills.memory_skill import MemorySkill
 from app.skills.system_skill import SystemSkill
 from app.skills.time_skill import TimeSkill
 
@@ -11,6 +12,7 @@ class SkillRegistry:
             TimeSkill(),
             SystemSkill(),
             AppLauncherSkill(),
+            MemorySkill(),
             AISkill(),
         ]
 
