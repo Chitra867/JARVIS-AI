@@ -1,3 +1,4 @@
+from app.skills.ai_skill import AISkill
 from app.skills.app_launcher_skill import AppLauncherSkill
 from app.skills.base import Skill
 from app.skills.system_skill import SystemSkill
@@ -10,6 +11,7 @@ class SkillRegistry:
             TimeSkill(),
             SystemSkill(),
             AppLauncherSkill(),
+            AISkill(),
         ]
 
     def find_skill(self, command: str) -> Skill | None:
