@@ -28,32 +28,19 @@ class MemoryExtractor:
         "instruction",
     }
 
-    # Memories containing these phrases are
-    # usually too vague to be useful.
     VAGUE_PHRASES = (
         "specific programming language",
         "specific language",
         "specific framework",
         "specific tool",
         "specific project",
-        "specific technology",
         "some programming language",
         "some framework",
         "some tool",
-        "some project",
         "certain programming language",
         "certain framework",
-        "certain tool",
-        "certain project",
-        "a programming language",
-        "a framework",
-        "a certain tool",
     )
 
-    # Extra local protection.
-    # The LLM is instructed not to store secrets,
-    # but we also reject obvious credential-like
-    # memories in code.
     SENSITIVE_PATTERNS = (
         r"\bpassword\b",
         r"\bpasswd\b",
@@ -67,11 +54,6 @@ class MemoryExtractor:
     )
 
     def __init__(self) -> None:
-        # Memory extraction runs independently
-        # from the main JARVIS response.
-        #
-        # Therefore JARVIS can answer/speak while
-        # learning happens in the background.
         self.executor = (
             ThreadPoolExecutor(
                 max_workers=1,
@@ -81,10 +63,6 @@ class MemoryExtractor:
             )
         )
 
-    # ==================================================
-    # PUBLIC BACKGROUND SUBMIT
-    # ==================================================
-
     def submit(
         self,
         user_message: str,
@@ -93,15 +71,7 @@ class MemoryExtractor:
         source_message_id:
             int | None = None,
     ) -> None:
-        user_message = (
-            user_message.strip()
-        )
-
-        assistant_message = (
-            assistant_message.strip()
-        )
-
-        if not user_message:
+        if not user_message.strip():
             return
 
         try:
@@ -114,15 +84,10 @@ class MemoryExtractor:
             )
 
         except RuntimeError as error:
-            # Can occur during interpreter shutdown.
             print(
                 "Memory worker unavailable:",
                 error,
             )
-
-    # ==================================================
-    # EXTRACT MEMORY WITH OLLAMA
-    # ==================================================
 
     def _extract_and_store(
         self,
@@ -132,12 +97,34 @@ class MemoryExtractor:
         source_message_id:
             int | None,
     ) -> None:
-        prompt = f"""
-You are the long-term memory extraction system for JARVIS.
+        candidates = (
+            memory_manager
+            .get_memory_candidates(
+                user_message,
+                limit=20,
+            )
+        )
 
-Your job is NOT to answer the user.
-Your job is to identify durable information that the USER
-explicitly revealed and that may be useful in future conversations.
+        existing_context = "\n".join(
+            (
+                f"ID={memory['id']} | "
+                f"type={memory['type']} | "
+                f"key={memory['memory_key']} | "
+                f"content={memory['content']}"
+            )
+            for memory
+            in candidates
+        )
+
+        if not existing_context:
+            existing_context = (
+                "No relevant active memories."
+            )
+
+        prompt = f"""
+You are the long-term memory manager for JARVIS.
+
+Analyze what the USER said.
 
 USER MESSAGE:
 {user_message}
@@ -145,148 +132,167 @@ USER MESSAGE:
 JARVIS RESPONSE:
 {assistant_message}
 
-Only learn information that originates from the USER.
+RELEVANT ACTIVE MEMORIES:
+{existing_context}
 
-Good things to remember:
-- stable user preferences
-- important facts deliberately provided by the user
-- ongoing project information
-- technologies used in projects
-- long-term goals
-- important decisions
-- persistent instructions
-- stable working preferences
-- recurring workflows
+Your job is to determine whether memory should be:
 
-CRITICAL PRECISION RULES:
-- Preserve exact important details from the user's statement.
-- Preserve concrete names.
-- Preserve project names.
-- Preserve programming languages.
-- Preserve technologies.
-- Preserve frameworks.
-- Preserve applications and tools.
-- Preserve meaningful numbers and values.
-- Preserve explicit choices and preferences.
-- A saved memory must make sense without the original conversation.
-- Do not remove the most important noun or value.
-- Do not generalize precise information into vague information.
-- Do not infer information the user did not state.
-- Do not transform uncertainty into certainty.
-- Store only what the USER revealed.
-- The JARVIS response is context only and is not evidence of a user fact.
+1. REMEMBERED
+2. UPDATED / SUPERSEDED
+3. FORGOTTEN
+4. LEFT UNCHANGED
 
-NEVER create vague memories such as:
-- "The user prefers a specific programming language."
-- "The user uses a certain framework."
-- "The user is working on some project."
-- "The user prefers a particular tool."
+IMPORTANT:
+The user's newest explicit statement has priority over
+older memories.
 
-Instead preserve the concrete information.
+If a new statement changes an older preference, decision,
+project configuration, instruction, goal, or fact:
 
-EXAMPLE 1
+- create the NEW memory
+- reuse the old memory_key when available
+- include the IDs of the old memories in
+  supersedes_memory_ids
+
+Example:
+
+Existing:
+ID=12
+key=jarvis.desktop_interface
+content=The user prefers React for the JARVIS desktop interface.
 
 User:
-"For my AI projects I usually prefer Python."
+"I don't use React for JARVIS anymore.
+I prefer Tauri instead."
 
-GOOD MEMORY:
-{{
-  "type": "preference",
-  "content": "The user usually prefers Python for AI projects.",
-  "importance": 0.85,
-  "confidence": 0.98
-}}
-
-BAD MEMORY:
-{{
-  "type": "preference",
-  "content": "The user prefers a specific programming language.",
-  "importance": 0.8,
-  "confidence": 0.9
-}}
-
-EXAMPLE 2
-
-User:
-"My CampusConnect project uses React Native and Expo."
-
-GOOD MEMORY:
-{{
-  "type": "project",
-  "content": "CampusConnect uses React Native and Expo.",
-  "importance": 0.85,
-  "confidence": 0.98
-}}
-
-BAD MEMORY:
-{{
-  "type": "project",
-  "content": "The user has a mobile application project.",
-  "importance": 0.7,
-  "confidence": 0.8
-}}
-
-EXAMPLE 3
-
-User:
-"For the JARVIS desktop interface I prefer React."
-
-GOOD MEMORY:
-{{
-  "type": "preference",
-  "content": "The user prefers React for the JARVIS desktop interface.",
-  "importance": 0.85,
-  "confidence": 0.98
-}}
-
-DO NOT SAVE:
-- greetings
-- temporary emotions
-- casual small talk
-- one-time questions
-- ordinary commands such as opening an application
-- search requests
-- generated JARVIS advice
-- assumptions
-- guesses
-- information invented by JARVIS
-- information mentioned only by JARVIS
-- trivial conversation
-- passwords
-- API keys
-- access tokens
-- authentication tokens
-- private keys
-- credentials
-- secrets
-
-Allowed memory types:
-- preference
-- fact
-- project
-- goal
-- decision
-- instruction
-
-Return valid JSON only.
-
-Required schema:
+Correct action:
 
 {{
-  "memories": [
+  "actions": [
     {{
+      "operation": "remember",
       "type": "preference",
-      "content": "A precise standalone memory.",
-      "importance": 0.8,
-      "confidence": 0.9
+      "memory_key": "jarvis.desktop_interface",
+      "content": "The user prefers Tauri for the JARVIS desktop interface.",
+      "importance": 0.9,
+      "confidence": 0.99,
+      "supersedes_memory_ids": [12]
     }}
   ]
 }}
 
-If nothing useful should be learned, return:
+If the existing memory does not yet have a memory_key,
+you may create a sensible stable key and still include its
+ID in supersedes_memory_ids.
+
+MEMORY KEY RULES:
+
+Use a stable lowercase dot-separated key describing the
+subject and property.
+
+Examples:
+
+jarvis.desktop_interface
+ai.preferred_language
+campusconnect.framework
+response.style
+project.jarvis.voice_engine
+
+Do NOT put the actual changing value in the key.
+
+GOOD:
+jarvis.desktop_interface
+
+BAD:
+jarvis.react_interface
+
+This lets future values replace older values.
+
+FORGETTING:
+
+If the user explicitly asks JARVIS to forget stored
+information, return:
 
 {{
-  "memories": []
+  "actions": [
+    {{
+      "operation": "forget",
+      "memory_ids": [12]
+    }}
+  ]
+}}
+
+Only forget information when the USER explicitly asks
+to forget/remove it.
+
+PRECISION RULES:
+
+- Preserve exact technologies and names.
+- Preserve programming languages.
+- Preserve project names.
+- Preserve frameworks.
+- Preserve tools.
+- Preserve important values.
+- Never replace precise information with vague wording.
+- Save only information originating from the USER.
+- Never treat the JARVIS response as proof of a user fact.
+- Never invent information.
+
+SAVE durable information such as:
+
+- preferences
+- project facts
+- long-term goals
+- decisions
+- persistent instructions
+- important stable facts
+
+DO NOT SAVE:
+
+- greetings
+- temporary emotions
+- casual conversation
+- ordinary computer commands
+- one-time questions
+- JARVIS-generated advice
+- guesses
+- passwords
+- API keys
+- tokens
+- credentials
+- secrets
+
+Allowed types:
+
+preference
+fact
+project
+goal
+decision
+instruction
+
+Return JSON only.
+
+Schema:
+
+{{
+  "actions": [
+    {{
+      "operation": "remember",
+      "type": "preference",
+      "memory_key": "subject.property",
+      "content": "Precise standalone memory.",
+      "importance": 0.8,
+      "confidence": 0.9,
+      "supersedes_memory_ids": []
+    }}
+  ]
+}}
+
+If nothing should change:
+
+{{
+  "actions": []
 }}
 """.strip()
 
@@ -333,20 +339,20 @@ If nothing useful should be learned, return:
                 raw_answer
             )
 
-            memories = data.get(
-                "memories",
+            actions = data.get(
+                "actions",
                 [],
             )
 
             if not isinstance(
-                memories,
+                actions,
                 list,
             ):
                 return
 
-            for memory in memories:
-                self._validate_and_store(
-                    memory=memory,
+            for action in actions:
+                self._process_action(
+                    action=action,
                     conversation_id=(
                         conversation_id
                     ),
@@ -362,39 +368,88 @@ If nothing useful should be learned, return:
             TypeError,
             ValueError,
         ) as error:
-            # Learning must never break the
-            # normal JARVIS conversation.
             print(
                 "Memory extraction error:",
                 error,
             )
 
     # ==================================================
-    # VALIDATE EXTRACTED MEMORY
+    # PROCESS ACTION
     # ==================================================
 
-    def _validate_and_store(
+    def _process_action(
         self,
-        memory: object,
+        action: object,
         conversation_id: int,
         source_message_id:
             int | None,
     ) -> None:
         if not isinstance(
-            memory,
+            action,
             dict,
         ):
             return
 
+        operation = str(
+            action.get(
+                "operation",
+                "",
+            )
+        ).strip().lower()
+
+        if operation == "forget":
+            memory_ids = (
+                action.get(
+                    "memory_ids",
+                    [],
+                )
+            )
+
+            if not isinstance(
+                memory_ids,
+                list,
+            ):
+                return
+
+            clean_ids: list[int] = []
+
+            for value in memory_ids:
+                try:
+                    clean_ids.append(
+                        int(value)
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    continue
+
+            if clean_ids:
+                memory_manager.forget_memory_ids(
+                    clean_ids
+                )
+
+            return
+
+        if operation != "remember":
+            return
+
         memory_type = str(
-            memory.get(
+            action.get(
                 "type",
                 "",
             )
         ).strip().lower()
 
+        memory_key = str(
+            action.get(
+                "memory_key",
+                "",
+            )
+        ).strip()
+
         content = str(
-            memory.get(
+            action.get(
                 "content",
                 "",
             )
@@ -414,14 +469,14 @@ If nothing useful should be learned, return:
 
         try:
             importance = float(
-                memory.get(
+                action.get(
                     "importance",
                     0.5,
                 )
             )
 
             confidence = float(
-                memory.get(
+                action.get(
                     "confidence",
                     0.7,
                 )
@@ -433,7 +488,6 @@ If nothing useful should be learned, return:
         ):
             return
 
-        # Clamp values.
         importance = max(
             0.0,
             min(
@@ -450,7 +504,6 @@ If nothing useful should be learned, return:
             ),
         )
 
-        # Reject weak memories.
         if importance < 0.6:
             return
 
@@ -461,13 +514,10 @@ If nothing useful should be learned, return:
             content.lower()
         )
 
-        # ----------------------------------------------
-        # Reject vague memories
-        # ----------------------------------------------
-
         if any(
             phrase in content_lower
-            for phrase in self.VAGUE_PHRASES
+            for phrase
+            in self.VAGUE_PHRASES
         ):
             print(
                 "Rejected vague memory:",
@@ -475,10 +525,6 @@ If nothing useful should be learned, return:
             )
 
             return
-
-        # ----------------------------------------------
-        # Reject obvious secrets/credentials
-        # ----------------------------------------------
 
         if any(
             re.search(
@@ -495,24 +541,45 @@ If nothing useful should be learned, return:
 
             return
 
-        # ----------------------------------------------
-        # Store
-        # ----------------------------------------------
+        raw_supersedes = (
+            action.get(
+                "supersedes_memory_ids",
+                [],
+            )
+        )
+
+        supersedes: list[int] = []
+
+        if isinstance(
+            raw_supersedes,
+            list,
+        ):
+            for value in raw_supersedes:
+                try:
+                    supersedes.append(
+                        int(value)
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+                    continue
 
         memory_manager.save_memory(
             memory_type=(
                 memory_type
             ),
 
+            memory_key=(
+                memory_key
+                or None
+            ),
+
             content=content,
 
-            importance=(
-                importance
-            ),
+            importance=importance,
 
-            confidence=(
-                confidence
-            ),
+            confidence=confidence,
 
             source_conversation_id=(
                 conversation_id
@@ -520,6 +587,10 @@ If nothing useful should be learned, return:
 
             source_message_id=(
                 source_message_id
+            ),
+
+            supersedes_memory_ids=(
+                supersedes
             ),
         )
 
