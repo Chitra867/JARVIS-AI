@@ -1,12 +1,21 @@
+import asyncio
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.jarvis import jarvis
 from app.core.voice import voice_engine
+from app.core.wakeword import wakeword_engine
 from app.models.command import (
     CommandRequest,
     CommandResponse,
@@ -32,6 +41,10 @@ app.add_middleware(
 )
 
 
+# =========================================================
+# ROOT
+# =========================================================
+
 @app.get("/")
 async def root():
     return {
@@ -41,12 +54,20 @@ async def root():
     }
 
 
+# =========================================================
+# HEALTH
+# =========================================================
+
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
     }
 
+
+# =========================================================
+# TEXT COMMAND
+# =========================================================
 
 @app.post(
     "/api/command",
@@ -56,7 +77,9 @@ async def execute_command(
     request: CommandRequest,
 ) -> CommandResponse:
 
-    response = jarvis.execute(request.command)
+    response = jarvis.execute(
+        request.command
+    )
 
     return CommandResponse(
         command=request.command,
@@ -64,6 +87,10 @@ async def execute_command(
         success=True,
     )
 
+
+# =========================================================
+# VOICE COMMAND
+# =========================================================
 
 @app.post(
     "/api/voice",
@@ -94,8 +121,9 @@ async def execute_voice_command(
                 temp_file.name
             )
 
-        transcript = voice_engine.transcribe(
-            temp_path
+        transcript = await asyncio.to_thread(
+            voice_engine.transcribe,
+            temp_path,
         )
 
         if not transcript:
@@ -108,8 +136,9 @@ async def execute_voice_command(
                 success=False,
             )
 
-        response = jarvis.execute(
-            transcript
+        response = await asyncio.to_thread(
+            jarvis.execute,
+            transcript,
         )
 
         return VoiceCommandResponse(
@@ -125,3 +154,74 @@ async def execute_voice_command(
             temp_path.unlink(
                 missing_ok=True
             )
+
+
+# =========================================================
+# ALWAYS-LISTENING WAKE WORD
+# =========================================================
+@app.websocket("/ws/wakeword")
+async def wakeword_websocket(
+    websocket: WebSocket,
+) -> None:
+
+    await websocket.accept()
+
+    print("Wake-word listener connected.")
+
+    await websocket.send_json({
+        "type": "status",
+        "status": "waiting",
+    })
+
+    last_detection = 0.0
+    cooldown_seconds = 3.0
+    frame_count = 0
+
+    try:
+        while True:
+            pcm_bytes = await websocket.receive_bytes()
+
+            if not pcm_bytes:
+                continue
+
+            frame_count += 1
+
+            # Confirm browser audio is reaching backend
+            if frame_count % 50 == 0:
+                print(
+                    f"Wake audio frames received: {frame_count} "
+                    f"| bytes: {len(pcm_bytes)}"
+                )
+
+            detected = await asyncio.to_thread(
+                wakeword_engine.detect,
+                pcm_bytes,
+            )
+
+            now = time.monotonic()
+
+            if (
+                detected
+                and now - last_detection >= cooldown_seconds
+            ):
+                last_detection = now
+
+                print(
+                    ">>> HEY JARVIS DETECTED <<<"
+                )
+
+                await websocket.send_json({
+                    "type": "wakeword",
+                    "keyword": "hey_jarvis",
+                })
+
+    except WebSocketDisconnect:
+        print(
+            "Wake-word listener disconnected."
+        )
+
+    except Exception as error:
+        print(
+            "Wake-word WebSocket error:",
+            error,
+        )
