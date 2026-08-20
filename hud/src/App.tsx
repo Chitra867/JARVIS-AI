@@ -16,20 +16,68 @@ import {
 
 import "./App.css";
 
+
+type VoiceTurnResult =
+  | "continue"
+  | "end"
+  | "silence";
+
+
+const MAX_CONVERSATION_TURNS = 20;
+
+const FIRST_COMMAND_TIMEOUT = 6000;
+const FOLLOW_UP_TIMEOUT = 6000;
+
+const END_CONVERSATION_PHRASES = new Set([
+  "thanks",
+  "thank you",
+  "thanks jarvis",
+  "thank you jarvis",
+
+  "that's all",
+  "thats all",
+
+  "that's it",
+  "thats it",
+
+  "stop listening",
+  "stop conversation",
+  "end conversation",
+
+  "goodbye",
+  "goodbye jarvis",
+
+  "bye",
+  "bye jarvis",
+]);
+
+
 function App() {
-  const [command, setCommand] = useState("");
+  const [command, setCommand] =
+    useState("");
 
-  const [response, setResponse] = useState(
-    "Click Enable JARVIS to start hands-free mode.",
-  );
+  const [response, setResponse] =
+    useState(
+      "Click Enable JARVIS to start hands-free mode.",
+    );
 
-  const [isLoading, setIsLoading] = useState(false);
-  const [isEnabled, setIsEnabled] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isLoading, setIsLoading] =
+    useState(false);
+
+  const [isEnabled, setIsEnabled] =
+    useState(false);
+
+  const [isListening, setIsListening] =
+    useState(false);
+
+  const [isSpeaking, setIsSpeaking] =
+    useState(false);
+
 
   const wakeWordRef =
-    useRef<WakeWordListener | null>(null);
+    useRef<WakeWordListener | null>(
+      null,
+    );
 
   const conversationBusyRef =
     useRef(false);
@@ -37,8 +85,18 @@ function App() {
   const mountedRef =
     useRef(true);
 
+  const enabledRef =
+    useRef(false);
+
+  const cancelConversationRef =
+    useRef(false);
+
+  const wakeHandlerRef =
+    useRef<() => void>(() => {});
+
+
   // =====================================================
-  // SPEAK JARVIS RESPONSE
+  // SPEAK
   // =====================================================
 
   const speak = (
@@ -46,6 +104,7 @@ function App() {
   ): Promise<void> => {
     return new Promise((resolve) => {
       if (
+        !text.trim() ||
         !("speechSynthesis" in window)
       ) {
         resolve();
@@ -91,6 +150,84 @@ function App() {
     });
   };
 
+
+  // =====================================================
+  // DISPLAY + SPEAK
+  // =====================================================
+
+  const respond = async (
+    text: string,
+    shouldSpeak = true,
+  ): Promise<void> => {
+    if (!mountedRef.current) {
+      return;
+    }
+
+    setResponse(text);
+
+    if (shouldSpeak) {
+      await speak(text);
+    }
+  };
+
+
+  // =====================================================
+  // NORMALIZE TRANSCRIPT
+  // =====================================================
+
+  const normalizeTranscript = (
+    text: string,
+  ): string => {
+    return text
+      .trim()
+      .toLowerCase()
+      .replace(/[.,!?;:]+$/g, "")
+      .replace(/\s+/g, " ");
+  };
+
+
+  // =====================================================
+  // CHECK END OF CONVERSATION
+  // =====================================================
+
+  const isEndConversationCommand = (
+    text: string,
+  ): boolean => {
+    const normalized =
+      normalizeTranscript(text);
+
+    return END_CONVERSATION_PHRASES.has(
+      normalized,
+    );
+  };
+
+
+  const getConversationEndResponse = (
+    text: string,
+  ): string => {
+    const normalized =
+      normalizeTranscript(text);
+
+    if (
+      normalized.includes("thank")
+      || normalized === "thanks"
+      || normalized === "thanks jarvis"
+    ) {
+      return "You're welcome.";
+    }
+
+    if (
+      normalized.includes("goodbye")
+      || normalized === "bye"
+      || normalized === "bye jarvis"
+    ) {
+      return "Goodbye.";
+    }
+
+    return "Okay.";
+  };
+
+
   // =====================================================
   // TEXT COMMAND
   // =====================================================
@@ -113,9 +250,23 @@ function App() {
 
     conversationBusyRef.current = true;
 
+    let wakeWasRunning = false;
+
     try {
+      if (
+        enabledRef.current &&
+        wakeWordRef.current
+      ) {
+        wakeWasRunning = true;
+
+        await wakeWordRef.current.stop();
+      }
+
       setIsLoading(true);
-      setResponse("Processing...");
+
+      setResponse(
+        "Processing...",
+      );
 
       const result =
         await sendCommand(
@@ -123,17 +274,17 @@ function App() {
         );
 
       setCommand("");
-      setResponse(
-        result.response,
-      );
 
-      await speak(
+      await respond(
         result.response,
       );
     } catch (error) {
-      console.error(error);
+      console.error(
+        "Text command error:",
+        error,
+      );
 
-      setResponse(
+      await respond(
         "Unable to communicate with JARVIS core.",
       );
     } finally {
@@ -141,154 +292,216 @@ function App() {
 
       conversationBusyRef.current =
         false;
+
+      if (
+        wakeWasRunning &&
+        enabledRef.current &&
+        mountedRef.current &&
+        wakeWordRef.current
+      ) {
+        try {
+          await wakeWordRef.current.start();
+        } catch (error) {
+          console.error(
+            "Wake listener restart error:",
+            error,
+          );
+        }
+      }
     }
   };
+
 
   // =====================================================
   // AUTOMATIC COMMAND RECORDING
   // =====================================================
 
-  const recordCommand =
-    async (): Promise<Blob | null> => {
-      if (
-        !navigator.mediaDevices
-          ?.getUserMedia
-      ) {
-        setResponse(
-          "Microphone is not supported.",
-        );
+  const recordCommand = async (
+    noSpeechTimeout =
+      FIRST_COMMAND_TIMEOUT,
 
-        return null;
+    listeningMessage =
+      "Listening...",
+  ): Promise<Blob | null> => {
+    if (
+      !navigator.mediaDevices
+        ?.getUserMedia
+    ) {
+      await respond(
+        "Microphone is not supported.",
+      );
+
+      return null;
+    }
+
+    if (
+      !("MediaRecorder" in window)
+    ) {
+      await respond(
+        "Audio recording is not supported.",
+      );
+
+      return null;
+    }
+
+
+    let stream:
+      | MediaStream
+      | null = null;
+
+    let audioContext:
+      | AudioContext
+      | null = null;
+
+
+    try {
+      stream =
+        await navigator.mediaDevices
+          .getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 1,
+            },
+          });
+
+
+      audioContext =
+        new AudioContext();
+
+      if (
+        audioContext.state ===
+        "suspended"
+      ) {
+        await audioContext.resume();
       }
 
-      if (
-        !("MediaRecorder" in window)
-      ) {
-        setResponse(
-          "Audio recording is not supported.",
+
+      const recorder =
+        new MediaRecorder(
+          stream,
         );
 
-        return null;
-      }
+      const chunks: Blob[] = [];
 
-      let stream: MediaStream | null =
-        null;
 
-      let audioContext:
-        | AudioContext
-        | null = null;
-
-      try {
-        stream =
-          await navigator.mediaDevices
-            .getUserMedia({
-              audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                channelCount: 1,
-              },
-            });
-
-        const recorder =
-          new MediaRecorder(stream);
-
-        const chunks: Blob[] = [];
-
-        audioContext =
-          new AudioContext();
-
-        if (
-          audioContext.state ===
-          "suspended"
-        ) {
-          await audioContext.resume();
-        }
-
-        const source =
-          audioContext
-            .createMediaStreamSource(
-              stream,
-            );
-
-        const analyser =
-          audioContext
-            .createAnalyser();
-
-        analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant =
-          0.2;
-
-        source.connect(analyser);
-
-        const samples =
-          new Uint8Array(
-            analyser.fftSize,
+      const source =
+        audioContext
+          .createMediaStreamSource(
+            stream,
           );
 
-        return await new Promise<
-          Blob | null
-        >((resolve) => {
-          let speechDetected = false;
+      const analyser =
+        audioContext
+          .createAnalyser();
 
-          let silenceStarted:
-            | number
-            | null = null;
+      analyser.fftSize = 2048;
 
-          const startedAt =
-            Date.now();
+      analyser.smoothingTimeConstant =
+        0.2;
 
-          let animationFrame = 0;
+      source.connect(
+        analyser,
+      );
 
-          const stopRecorder = () => {
-            if (
-              recorder.state ===
-              "recording"
-            ) {
-              recorder.stop();
-            }
-          };
 
-          const cleanup =
-            async () => {
-              cancelAnimationFrame(
-                animationFrame,
-              );
+      const samples =
+        new Uint8Array(
+          analyser.fftSize,
+        );
 
+
+      return await new Promise<
+        Blob | null
+      >((resolve) => {
+        let speechDetected = false;
+
+        let silenceStarted:
+          | number
+          | null = null;
+
+        const startedAt =
+          Date.now();
+
+        let animationFrame = 0;
+
+        let finished = false;
+
+
+        const finish = (
+          value: Blob | null,
+        ) => {
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+
+          resolve(value);
+        };
+
+
+        const stopRecorder = () => {
+          if (
+            recorder.state ===
+            "recording"
+          ) {
+            recorder.stop();
+          }
+        };
+
+
+        const cleanup =
+          async () => {
+            cancelAnimationFrame(
+              animationFrame,
+            );
+
+            try {
               source.disconnect();
+            } catch {
+              // already disconnected
+            }
+
+            try {
               analyser.disconnect();
+            } catch {
+              // already disconnected
+            }
 
-              stream
-                ?.getTracks()
-                .forEach(
-                  (track) =>
-                    track.stop(),
-                );
-
-              if (
-                audioContext &&
-                audioContext.state !==
-                  "closed"
-              ) {
-                await audioContext.close();
-              }
-            };
-
-          recorder.ondataavailable = (
-            event,
-          ) => {
-            if (
-              event.data.size > 0
-            ) {
-              chunks.push(
-                event.data,
+            stream
+              ?.getTracks()
+              .forEach(
+                (track) =>
+                  track.stop(),
               );
+
+            if (
+              audioContext &&
+              audioContext.state !==
+                "closed"
+            ) {
+              await audioContext.close();
             }
           };
 
-          recorder.onerror = async (
-            event,
-          ) => {
+
+        recorder.ondataavailable = (
+          event,
+        ) => {
+          if (
+            event.data.size > 0
+          ) {
+            chunks.push(
+              event.data,
+            );
+          }
+        };
+
+
+        recorder.onerror =
+          async (event) => {
             console.error(
               "Recorder error:",
               event,
@@ -296,271 +509,428 @@ function App() {
 
             await cleanup();
 
-            resolve(null);
+            finish(null);
           };
 
-          recorder.onstop =
-            async () => {
-              await cleanup();
 
-              const blob =
-                new Blob(
-                  chunks,
-                  {
-                    type:
-                      recorder.mimeType ||
-                      "audio/webm",
-                  },
-                );
-
-              resolve(
-                blob.size > 0
-                  ? blob
-                  : null,
-              );
-            };
-
-          const monitorAudio = () => {
-            analyser
-              .getByteTimeDomainData(
-                samples,
-              );
-
-            let sum = 0;
-
-            for (
-              let index = 0;
-              index <
-              samples.length;
-              index++
-            ) {
-              const normalized =
-                (
-                  samples[index] -
-                  128
-                ) /
-                128;
-
-              sum +=
-                normalized *
-                normalized;
-            }
-
-            const rms =
-              Math.sqrt(
-                sum /
-                  samples.length,
-              );
-
-            // Lower threshold works better
-            // with quieter laptop microphones.
-            const speechThreshold =
-              0.015;
+        recorder.onstop =
+          async () => {
+            await cleanup();
 
             if (
-              rms >
-              speechThreshold
+              !speechDetected ||
+              cancelConversationRef.current
             ) {
-              speechDetected = true;
-
-              silenceStarted = null;
-            } else if (
-              speechDetected
-            ) {
-              if (
-                silenceStarted ===
-                null
-              ) {
-                silenceStarted =
-                  Date.now();
-              }
-
-              // Stop after user has
-              // finished speaking.
-              if (
-                Date.now() -
-                  silenceStarted >=
-                1200
-              ) {
-                stopRecorder();
-
-                return;
-              }
-            }
-
-            // No speech at all for 5 sec.
-            if (
-              !speechDetected &&
-              Date.now() -
-                startedAt >
-                5000
-            ) {
-              stopRecorder();
-
+              finish(null);
               return;
             }
 
-            // Maximum command length.
-            if (
-              Date.now() -
-                startedAt >
-              12000
-            ) {
-              stopRecorder();
-
-              return;
-            }
-
-            animationFrame =
-              requestAnimationFrame(
-                monitorAudio,
+            const blob =
+              new Blob(
+                chunks,
+                {
+                  type:
+                    recorder.mimeType ||
+                    "audio/webm",
+                },
               );
+
+            finish(
+              blob.size > 0
+                ? blob
+                : null,
+            );
           };
 
-          recorder.start();
 
-          setIsListening(true);
+        const monitorAudio = () => {
+          if (
+            cancelConversationRef.current
+          ) {
+            stopRecorder();
+            return;
+          }
 
-          setResponse(
-            "Listening...",
-          );
 
-          monitorAudio();
-        });
-      } catch (error) {
-        console.error(
-          "Recording error:",
-          error,
+          analyser
+            .getByteTimeDomainData(
+              samples,
+            );
+
+
+          let sum = 0;
+
+          for (
+            let index = 0;
+            index < samples.length;
+            index++
+          ) {
+            const normalized =
+              (
+                samples[index] -
+                128
+              ) /
+              128;
+
+            sum +=
+              normalized *
+              normalized;
+          }
+
+
+          const rms =
+            Math.sqrt(
+              sum /
+                samples.length,
+            );
+
+
+          const speechThreshold =
+            0.015;
+
+
+          if (
+            rms >
+            speechThreshold
+          ) {
+            speechDetected = true;
+
+            silenceStarted = null;
+          } else if (
+            speechDetected
+          ) {
+            if (
+              silenceStarted ===
+              null
+            ) {
+              silenceStarted =
+                Date.now();
+            }
+
+
+            // User finished speaking.
+            if (
+              Date.now() -
+                silenceStarted >=
+              1200
+            ) {
+              stopRecorder();
+              return;
+            }
+          }
+
+
+          // No speech.
+          if (
+            !speechDetected &&
+            Date.now() -
+              startedAt >
+              noSpeechTimeout
+          ) {
+            stopRecorder();
+            return;
+          }
+
+
+          // Maximum utterance length.
+          if (
+            Date.now() -
+              startedAt >
+            15000
+          ) {
+            stopRecorder();
+            return;
+          }
+
+
+          animationFrame =
+            requestAnimationFrame(
+              monitorAudio,
+            );
+        };
+
+
+        recorder.start();
+
+        setIsListening(true);
+
+        setResponse(
+          listeningMessage,
         );
 
-        stream
-          ?.getTracks()
-          .forEach(
-            (track) =>
-              track.stop(),
-          );
+        monitorAudio();
+      });
+    } catch (error) {
+      console.error(
+        "Recording error:",
+        error,
+      );
 
-        if (
-          audioContext &&
-          audioContext.state !==
-            "closed"
-        ) {
-          await audioContext.close();
-        }
+      stream
+        ?.getTracks()
+        .forEach(
+          (track) =>
+            track.stop(),
+        );
 
-        return null;
+      if (
+        audioContext &&
+        audioContext.state !==
+          "closed"
+      ) {
+        await audioContext.close();
       }
-    };
-
-  // =====================================================
-  // SEND VOICE TO JARVIS
-  // =====================================================
-
-  const processVoiceCommand =
-    async () => {
-      const audio =
-        await recordCommand();
 
       setIsListening(false);
 
-      if (!audio) {
-        setResponse(
-          "I didn't hear anything.",
+      return null;
+    }
+  };
+
+
+  // =====================================================
+  // PROCESS ONE CONVERSATION TURN
+  // =====================================================
+
+  const processVoiceTurn = async (
+    firstTurn: boolean,
+  ): Promise<VoiceTurnResult> => {
+    if (
+      cancelConversationRef.current
+    ) {
+      return "end";
+    }
+
+
+    const audio =
+      await recordCommand(
+        firstTurn
+          ? FIRST_COMMAND_TIMEOUT
+          : FOLLOW_UP_TIMEOUT,
+
+        firstTurn
+          ? "Listening..."
+          : "Listening for follow-up...",
+      );
+
+
+    setIsListening(false);
+
+
+    if (
+      cancelConversationRef.current
+    ) {
+      return "end";
+    }
+
+
+    // User stayed silent.
+    if (!audio) {
+      return "silence";
+    }
+
+
+    try {
+      setIsLoading(true);
+
+      setResponse(
+        "Processing...",
+      );
+
+
+      const result =
+        await sendVoice(
+          audio,
         );
 
-        return;
+
+      const transcript =
+        result.transcript?.trim() || "";
+
+
+      if (transcript) {
+        setCommand(
+          transcript,
+        );
       }
 
-      try {
-        setIsLoading(true);
 
-        setResponse(
-          "Processing...",
+      if (!transcript) {
+        await respond(
+          result.response ||
+            "I couldn't hear that clearly.",
         );
+
+        return "end";
+      }
+
+
+      // -----------------------------------------------
+      // User wants to finish conversation.
+      // -----------------------------------------------
+
+      if (
+        isEndConversationCommand(
+          transcript,
+        )
+      ) {
+        await respond(
+          getConversationEndResponse(
+            transcript,
+          ),
+        );
+
+        return "end";
+      }
+
+
+      // -----------------------------------------------
+      // Speak actual JARVIS result.
+      // -----------------------------------------------
+
+      await respond(
+        result.response,
+      );
+
+
+      if (!result.success) {
+        return "end";
+      }
+
+
+      return "continue";
+    } catch (error) {
+      console.error(
+        "Voice processing error:",
+        error,
+      );
+
+      await respond(
+        "Voice processing failed.",
+      );
+
+      return "end";
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+
+  // =====================================================
+  // CONTINUOUS CONVERSATION
+  // =====================================================
+
+  const runConversation =
+    async (): Promise<void> => {
+      await respond(
+        "Yes?",
+      );
+
+
+      for (
+        let turn = 0;
+        turn <
+        MAX_CONVERSATION_TURNS;
+        turn++
+      ) {
+        if (
+          cancelConversationRef.current ||
+          !enabledRef.current ||
+          !mountedRef.current
+        ) {
+          break;
+        }
+
 
         const result =
-          await sendVoice(audio);
+          await processVoiceTurn(
+            turn === 0,
+          );
+
 
         if (
-          result.transcript
+          result === "end"
         ) {
-          setCommand(
-            result.transcript,
-          );
+          break;
         }
 
-        setResponse(
-          result.response,
-        );
 
         if (
-          result.success
+          result === "silence"
         ) {
-          await speak(
-            result.response,
-          );
+          break;
         }
-      } catch (error) {
-        console.error(error);
 
-        setResponse(
-          "Voice processing failed.",
-        );
-      } finally {
-        setIsLoading(false);
+
+        // result === "continue"
+        //
+        // JARVIS has already spoken.
+        // We now automatically begin listening
+        // for the next user sentence.
       }
     };
+
 
   // =====================================================
   // WAKE WORD DETECTED
   // =====================================================
 
   const handleWakeWord =
-    async () => {
+    async (): Promise<void> => {
       if (
-        conversationBusyRef.current
+        conversationBusyRef.current ||
+        !enabledRef.current
       ) {
         return;
       }
 
+
       conversationBusyRef.current =
         true;
+
+      cancelConversationRef.current =
+        false;
+
 
       try {
         console.log(
           "HEY JARVIS DETECTED",
         );
 
-        // Stop wake-word microphone so
-        // it does not hear JARVIS itself.
+
+        // Stop wake-word listener so it
+        // cannot hear JARVIS speaking.
         await wakeWordRef.current
           ?.stop();
 
-        setResponse("Yes?");
 
-        await speak("Yes?");
-
-        // Automatically listen to
-        // user's next sentence.
-        await processVoiceCommand();
+        await runConversation();
       } catch (error) {
         console.error(
           "Conversation error:",
           error,
         );
 
-        setResponse(
+        await respond(
           "Conversation failed.",
         );
       } finally {
         setIsListening(false);
 
+        setIsLoading(false);
+
         conversationBusyRef.current =
           false;
 
-        // Resume waiting for Hey Jarvis.
+
+        // ---------------------------------------------
+        // Return to wake-word mode only if
+        // hands-free is still enabled.
+        // ---------------------------------------------
+
         if (
           mountedRef.current &&
+          enabledRef.current &&
           wakeWordRef.current
         ) {
           try {
@@ -584,34 +954,58 @@ function App() {
       }
     };
 
+
+  // Keep WakeWordListener callback pointed
+  // at the newest handler after render.
+  useEffect(() => {
+    wakeHandlerRef.current = () => {
+      void handleWakeWord();
+    };
+  });
+
+
   // =====================================================
-  // ENABLE HANDS-FREE JARVIS
+  // ENABLE HANDS-FREE
   // =====================================================
 
   const enableJarvis =
     async () => {
-      if (isEnabled) {
+      if (
+        enabledRef.current
+      ) {
         return;
       }
+
 
       try {
         setResponse(
           "Starting JARVIS...",
         );
 
+
+        cancelConversationRef.current =
+          false;
+
+
         const listener =
           new WakeWordListener(
             () => {
-              void handleWakeWord();
+              wakeHandlerRef.current();
             },
           );
+
 
         wakeWordRef.current =
           listener;
 
+
         await listener.start();
 
+
+        enabledRef.current = true;
+
         setIsEnabled(true);
+
 
         setResponse(
           'Waiting for "Hey Jarvis"...',
@@ -622,42 +1016,66 @@ function App() {
           error,
         );
 
-        setResponse(
+        enabledRef.current = false;
+
+        setIsEnabled(false);
+
+        await respond(
           "Unable to enable hands-free mode.",
         );
       }
     };
 
+
   // =====================================================
-  // DISABLE HANDS-FREE JARVIS
+  // DISABLE HANDS-FREE
   // =====================================================
 
   const disableJarvis =
     async () => {
       try {
-        conversationBusyRef.current =
+        cancelConversationRef.current =
           true;
+
+        enabledRef.current =
+          false;
+
 
         window.speechSynthesis
           ?.cancel();
 
+
         await wakeWordRef.current
           ?.stop();
 
-        wakeWordRef.current = null;
+
+        wakeWordRef.current =
+          null;
+
 
         setIsEnabled(false);
+
         setIsListening(false);
+
         setIsSpeaking(false);
+
+        setIsLoading(false);
+
 
         setResponse(
           "JARVIS hands-free mode disabled.",
+        );
+      } catch (error) {
+        console.error(
+          "Disable JARVIS error:",
+          error,
         );
       } finally {
         conversationBusyRef.current =
           false;
       }
     };
+
 
   // =====================================================
   // CLEANUP
@@ -669,6 +1087,11 @@ function App() {
     return () => {
       mountedRef.current = false;
 
+      enabledRef.current = false;
+
+      cancelConversationRef.current =
+        true;
+
       window.speechSynthesis
         ?.cancel();
 
@@ -676,6 +1099,7 @@ function App() {
         ?.stop();
     };
   }, []);
+
 
   // =====================================================
   // UI
@@ -685,6 +1109,7 @@ function App() {
     <main>
       <h1>JARVIS</h1>
 
+
       <p>
         {isListening
           ? `🎙 ${response}`
@@ -693,10 +1118,13 @@ function App() {
             : response}
       </p>
 
+
       {!isEnabled ? (
         <button
           type="button"
-          onClick={enableJarvis}
+          onClick={() => {
+            void enableJarvis();
+          }}
         >
           Enable JARVIS
         </button>
@@ -711,11 +1139,13 @@ function App() {
         </button>
       )}
 
+
       {isEnabled && (
         <p>
           🟢 Hands-free mode active
         </p>
       )}
+
 
       <form
         onSubmit={handleSubmit}
@@ -730,9 +1160,11 @@ function App() {
           placeholder="Ask JARVIS..."
           disabled={
             isLoading ||
-            isListening
+            isListening ||
+            isSpeaking
           }
         />
+
 
         <button
           type="submit"
@@ -751,5 +1183,6 @@ function App() {
     </main>
   );
 }
+
 
 export default App;
