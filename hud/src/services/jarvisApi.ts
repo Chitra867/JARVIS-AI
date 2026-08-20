@@ -4,6 +4,12 @@ export interface CommandResponse {
   success: boolean;
 }
 
+export interface VoiceCommandResponse {
+  transcript: string;
+  response: string;
+  success: boolean;
+}
+
 const API_BASE_URL = "http://127.0.0.1:8000";
 
 export async function sendCommand(
@@ -29,4 +35,32 @@ export async function sendCommand(
   }
 
   return response.json() as Promise<CommandResponse>;
+}
+
+export async function sendVoice(
+  audio: Blob,
+): Promise<VoiceCommandResponse> {
+  const formData = new FormData();
+
+  formData.append(
+    "audio",
+    audio,
+    "jarvis-voice.webm",
+  );
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/voice`,
+    {
+      method: "POST",
+      body: formData,
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Voice request failed: ${response.status}`,
+    );
+  }
+
+  return response.json() as Promise<VoiceCommandResponse>;
 }
