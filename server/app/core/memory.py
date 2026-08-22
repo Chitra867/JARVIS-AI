@@ -1,5 +1,7 @@
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -34,21 +36,35 @@ class MemoryManager:
     # DATABASE
     # ==================================================
 
+    @contextmanager
     def _connect(
         self,
-    ) -> sqlite3.Connection:
+    ) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(
             DATABASE_PATH,
             timeout=30,
         )
 
-        connection.row_factory = sqlite3.Row
+        connection.row_factory = (
+            sqlite3.Row
+        )
 
         connection.execute(
             "PRAGMA busy_timeout = 30000"
         )
 
-        return connection
+        try:
+            yield connection
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        else:
+            connection.commit()
+
+        finally:
+            connection.close()
 
     def _initialize_database(
         self,
@@ -179,8 +195,6 @@ class MemoryManager:
                 ON memories(updated_at)
                 """
             )
-
-            connection.commit()
 
     # ==================================================
     # HELPERS
@@ -769,8 +783,6 @@ class MemoryManager:
                     ),
                 )
 
-            connection.commit()
-
             return memory_id
 
     # ==================================================
@@ -883,8 +895,6 @@ class MemoryManager:
                 ),
             )
 
-            connection.commit()
-
             return int(
                 cursor.rowcount
             )
@@ -932,8 +942,6 @@ class MemoryManager:
                     normalized_key,
                 ),
             )
-
-            connection.commit()
 
             return int(
                 cursor.rowcount
@@ -1414,8 +1422,6 @@ class MemoryManager:
                         ),
                     )
 
-                connection.commit()
-
         return [
             content
             for (
@@ -1832,8 +1838,7 @@ class MemoryManager:
                             ]
                         )
                         if row[
-                            "superseded_by"
-                        ]
+                            "superseded_by"]
                         is not None
                         else None
                     ),
