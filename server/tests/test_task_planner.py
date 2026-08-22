@@ -11,6 +11,10 @@ class TaskPlannerTests(
     def setUp(self) -> None:
         self.planner = TaskPlanner()
 
+    # ==================================================
+    # SINGLE COMMAND
+    # ==================================================
+
     def test_single_command_creates_one_step(
         self,
     ) -> None:
@@ -31,6 +35,10 @@ class TaskPlannerTests(
             plan.steps[0].command,
             "open chrome",
         )
+
+    # ==================================================
+    # AND THEN
+    # ==================================================
 
     def test_and_then_sequence_is_split(
         self,
@@ -57,6 +65,10 @@ class TaskPlannerTests(
             ],
         )
 
+    # ==================================================
+    # THEN
+    # ==================================================
+
     def test_then_sequence_is_split(
         self,
     ) -> None:
@@ -78,6 +90,10 @@ class TaskPlannerTests(
             plan.steps[1].command,
             "type hello",
         )
+
+    # ==================================================
+    # MULTIPLE EXPLICIT MARKERS
+    # ==================================================
 
     def test_multiple_sequence_markers(
         self,
@@ -104,6 +120,10 @@ class TaskPlannerTests(
             3,
         )
 
+    # ==================================================
+    # FIRST
+    # ==================================================
+
     def test_first_marker_is_removed(
         self,
     ) -> None:
@@ -119,6 +139,10 @@ class TaskPlannerTests(
             "open chrome",
         )
 
+    # ==================================================
+    # EMPTY COMMAND
+    # ==================================================
+
     def test_empty_command_creates_empty_plan(
         self,
     ) -> None:
@@ -133,6 +157,140 @@ class TaskPlannerTests(
 
         self.assertFalse(
             plan.is_multi_step
+        )
+
+    # ==================================================
+    # NATURAL COMMA SEQUENCE
+    # ==================================================
+
+    def test_comma_separated_actions_are_split(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            (
+                "open chrome, "
+                "search for Python decorators"
+            )
+        )
+
+        self.assertEqual(
+            [
+                step.command
+                for step in plan.steps
+            ],
+            [
+                "open chrome",
+                "search for Python decorators",
+            ],
+        )
+
+    # ==================================================
+    # PLAIN AND BETWEEN ACTIONS
+    # ==================================================
+
+    def test_plain_and_between_actions_is_split(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            (
+                "open YouTube and "
+                "search for Python tutorials"
+            )
+        )
+
+        self.assertEqual(
+            [
+                step.command
+                for step in plan.steps
+            ],
+            [
+                "open YouTube",
+                "search for Python tutorials",
+            ],
+        )
+
+    # ==================================================
+    # FULL NATURAL COMMAND
+    # ==================================================
+
+    def test_natural_four_step_command(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            (
+                "Open Chrome, "
+                "search for Python decorators, "
+                "then open YouTube and "
+                "search for a tutorial."
+            )
+        )
+
+        self.assertEqual(
+            len(plan.steps),
+            4,
+        )
+
+        self.assertEqual(
+            [
+                step.command
+                for step in plan.steps
+            ],
+            [
+                "Open Chrome",
+                "search for Python decorators",
+                "open YouTube",
+                "search for a tutorial.",
+            ],
+        )
+
+    # ==================================================
+    # DO NOT SPLIT QUERY CONTENT
+    # ==================================================
+
+    def test_search_query_with_and_is_not_split(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            "search for React and Vue"
+        )
+
+        self.assertEqual(
+            len(plan.steps),
+            1,
+        )
+
+        self.assertEqual(
+            plan.steps[0].command,
+            "search for React and Vue",
+        )
+
+    # ==================================================
+    # MIXED ACTION + AI
+    # ==================================================
+
+    def test_action_and_ai_request_are_split(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            (
+                "open chrome and "
+                "explain dependency injection"
+            )
+        )
+
+        self.assertEqual(
+            len(plan.steps),
+            2,
+        )
+
+        self.assertEqual(
+            plan.steps[0].command,
+            "open chrome",
+        )
+
+        self.assertEqual(
+            plan.steps[1].command,
+            "explain dependency injection",
         )
 
 

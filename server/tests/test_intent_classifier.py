@@ -59,7 +59,7 @@ class IntentClassifierTests(
         )
 
     # ==================================================
-    # UNSUPPORTED REAL-WORLD ACTION
+    # UNSUPPORTED ACTION
     # ==================================================
 
     def test_unsupported_action_is_detected(
@@ -78,7 +78,7 @@ class IntentClassifierTests(
         )
 
     # ==================================================
-    # UI / KEYBOARD ACTION
+    # UI ACTION
     # ==================================================
 
     def test_type_command_is_action(
@@ -97,7 +97,7 @@ class IntentClassifierTests(
         )
 
     # ==================================================
-    # MULTI-STEP: AND THEN
+    # EXPLICIT MULTI-STEP
     # ==================================================
 
     def test_multi_step_command_is_detected(
@@ -119,7 +119,7 @@ class IntentClassifierTests(
         )
 
     # ==================================================
-    # MULTI-STEP: THEN
+    # THEN SEQUENCE
     # ==================================================
 
     def test_then_sequence_is_multi_step(
@@ -129,6 +129,69 @@ class IntentClassifierTests(
             self.classifier
             .classify(
                 "open notepad then type hello"
+            )
+        )
+
+        self.assertEqual(
+            result.intent,
+            IntentType.MULTI_STEP,
+        )
+
+    # ==================================================
+    # COMMA-SEPARATED ACTIONS
+    # ==================================================
+
+    def test_comma_separated_actions_are_multi_step(
+        self,
+    ) -> None:
+        result = (
+            self.classifier
+            .classify(
+                (
+                    "open chrome, "
+                    "search Python decorators"
+                )
+            )
+        )
+
+        self.assertEqual(
+            result.intent,
+            IntentType.MULTI_STEP,
+        )
+
+    # ==================================================
+    # REPEATED ACTION
+    # ==================================================
+
+    def test_repeated_same_action_is_multi_step(
+        self,
+    ) -> None:
+        result = (
+            self.classifier
+            .classify(
+                "open chrome, open youtube"
+            )
+        )
+
+        self.assertEqual(
+            result.intent,
+            IntentType.MULTI_STEP,
+        )
+
+    # ==================================================
+    # ACTION + REASONING
+    # ==================================================
+
+    def test_action_and_reasoning_is_multi_step(
+        self,
+    ) -> None:
+        result = (
+            self.classifier
+            .classify(
+                (
+                    "open chrome and "
+                    "explain dependency injection"
+                )
             )
         )
 

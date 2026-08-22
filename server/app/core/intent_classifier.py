@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -18,7 +19,7 @@ class IntentResult:
 
 class IntentClassifier:
     # ==================================================
-    # REAL-WORLD / COMPUTER ACTION PATTERNS
+    # REAL COMPUTER ACTIONS
     # ==================================================
 
     ACTION_PREFIXES = (
@@ -61,8 +62,6 @@ class IntentClassifier:
         "sleep ",
         "take screenshot",
         "capture screenshot",
-
-        # UI / keyboard / mouse actions
         "type ",
         "press ",
         "click ",
@@ -72,7 +71,31 @@ class IntentClassifier:
     )
 
     # ==================================================
-    # MULTI-STEP MARKERS
+    # REASONING STEPS
+    # ==================================================
+
+    REASONING_PREFIXES = (
+        "explain ",
+        "summarize ",
+        "compare ",
+        "recommend ",
+        "suggest ",
+        "review ",
+        "evaluate ",
+        "write ",
+        "generate ",
+        "calculate ",
+        "compute ",
+        "translate ",
+    )
+
+    STEP_PREFIXES = (
+        ACTION_PREFIXES
+        + REASONING_PREFIXES
+    )
+
+    # ==================================================
+    # EXPLICIT MULTI-STEP MARKERS
     # ==================================================
 
     MULTI_STEP_MARKERS = (
@@ -105,7 +128,6 @@ class IntentClassifier:
                 reason="empty command",
             )
 
-        # A verified deterministic skill always wins.
         if has_matching_skill:
             return IntentResult(
                 intent=IntentType.SKILL,
@@ -115,8 +137,6 @@ class IntentClassifier:
                 ),
             )
 
-        # Detect sequential/multi-step work before
-        # classifying individual actions.
         if self._looks_multi_step(
             normalized
         ):
@@ -129,8 +149,6 @@ class IntentClassifier:
                 ),
             )
 
-        # An action without a matching real skill
-        # must not silently fall through to AI.
         if normalized.startswith(
             self.ACTION_PREFIXES
         ):
@@ -143,8 +161,6 @@ class IntentClassifier:
                 ),
             )
 
-        # Everything else is conversational,
-        # explanatory, analytical, or reasoning work.
         return IntentResult(
             intent=IntentType.AI,
             confidence=0.8,
@@ -162,8 +178,6 @@ class IntentClassifier:
         self,
         command: str,
     ) -> bool:
-        # Explicit sequence language is the
-        # strongest multi-step signal.
         if any(
             marker in command
             for marker
@@ -171,18 +185,41 @@ class IntentClassifier:
         ):
             return True
 
-        # Also detect commands containing multiple
-        # independently recognizable action phrases.
-        action_count = sum(
-            1
-            for prefix
-            in self.ACTION_PREFIXES
-            if prefix in command
-        )
+        step_count = 0
 
-        return (
-            action_count >= 2
-        )
+        for prefix in self.STEP_PREFIXES:
+            phrase = (
+                prefix
+                .strip()
+            )
+
+            if not phrase:
+                continue
+
+            pattern = (
+                r"(?<![a-z0-9_])"
+                + re.escape(
+                    phrase
+                )
+                + r"(?=\s|$)"
+            )
+
+            occurrences = (
+                re.findall(
+                    pattern,
+                    command,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+            step_count += len(
+                occurrences
+            )
+
+            if step_count >= 2:
+                return True
+
+        return False
 
 
 intent_classifier = IntentClassifier()
