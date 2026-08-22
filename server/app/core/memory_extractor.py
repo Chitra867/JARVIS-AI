@@ -203,6 +203,126 @@ class MemoryExtractor:
             - self.GENERIC_KEY_TOKENS
         )
 
+        # ==================================================
+    # ONE-TIME REQUEST DETECTION
+    # ==================================================
+
+    def _is_obvious_one_time_request(
+        self,
+        user_message: str,
+    ) -> bool:
+        normalized = (
+            user_message
+            .strip()
+            .lower()
+            .rstrip("?.!")
+        )
+
+        durable_markers = (
+            "i prefer ",
+            "i use ",
+            "i usually ",
+            "i always ",
+            "i no longer ",
+            "i don't use ",
+            "i do not use ",
+            "i switched ",
+            "i changed ",
+            "my preferred ",
+            "my preference ",
+            "from now on ",
+            "going forward ",
+        )
+
+        if any(
+            marker in normalized
+            for marker in durable_markers
+        ):
+            return False
+
+        request_prefixes = (
+            "write ",
+            "create ",
+            "make ",
+            "generate ",
+            "explain ",
+            "summarize ",
+            "translate ",
+            "calculate ",
+            "compute ",
+            "search ",
+            "google ",
+            "youtube ",
+            "open ",
+            "launch ",
+            "start ",
+            "close ",
+            "play ",
+            "pause ",
+            "resume ",
+            "stop ",
+            "find ",
+            "show ",
+            "download ",
+            "upload ",
+            "install ",
+            "uninstall ",
+            "send ",
+            "email ",
+            "message ",
+            "call ",
+            "turn on ",
+            "turn off ",
+            "enable ",
+            "disable ",
+            "increase ",
+            "decrease ",
+            "set volume ",
+            "mute ",
+            "unmute ",
+            "lock ",
+            "shutdown ",
+            "restart ",
+            "reboot ",
+            "sleep ",
+            "take screenshot",
+            "capture screenshot",
+        )
+
+        if normalized.startswith(
+            request_prefixes
+        ):
+            return True
+
+        question_prefixes = (
+            "what ",
+            "why ",
+            "how ",
+            "when ",
+            "where ",
+            "who ",
+            "which ",
+            "can ",
+            "could ",
+            "would ",
+            "should ",
+            "do ",
+            "does ",
+            "did ",
+            "is ",
+            "are ",
+            "was ",
+            "were ",
+            "will ",
+        )
+
+        if normalized.startswith(
+            question_prefixes
+        ):
+            return True
+
+        return False
+
     # ==================================================
     # SKIP MEMORY-CONTROL COMMANDS
     # ==================================================
@@ -249,6 +369,19 @@ class MemoryExtractor:
             return True
 
         if self._is_explicit_forget_request(
+            user_message
+        ):
+            return True
+
+        if normalized.startswith(
+            (
+                "remember ",
+                "remember that ",
+            )
+        ):
+            return True
+
+        if self._is_obvious_one_time_request(
             user_message
         ):
             return True

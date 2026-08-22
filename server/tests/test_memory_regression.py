@@ -182,12 +182,17 @@ class MemoryRegressionTests(unittest.TestCase):
     def test_forget_by_key(self) -> None:
         self.memory.save_memory(
             memory_type="fact",
-            content="Temporary regression memory.",
+            content=(
+                "Temporary regression memory."
+            ),
             memory_key="test.forget",
         )
 
-        count = self.memory.forget_by_key(
-            "test.forget"
+        count = (
+            self.memory
+            .forget_by_key(
+                "test.forget"
+            )
         )
 
         self.assertEqual(
@@ -297,12 +302,62 @@ class MemoryExtractorSafetyTests(
     unittest.TestCase
 ):
     def setUp(self) -> None:
-        self.extractor = MemoryExtractor()
+        self.extractor = (
+            MemoryExtractor()
+        )
 
     def tearDown(self) -> None:
         self.extractor.executor.shutdown(
             wait=True,
             cancel_futures=True,
+        )
+
+    # ==================================================
+    # ONE-TIME REQUEST FILTERING
+    # ==================================================
+
+    def test_one_time_coding_request_is_skipped(
+        self,
+    ) -> None:
+        result = (
+            self.extractor
+            ._should_skip_extraction(
+                "write a python function "
+                "that adds two numbers"
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+    def test_search_request_is_skipped(
+        self,
+    ) -> None:
+        result = (
+            self.extractor
+            ._should_skip_extraction(
+                "search python decorators"
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+    def test_durable_preference_is_not_skipped(
+        self,
+    ) -> None:
+        result = (
+            self.extractor
+            ._should_skip_extraction(
+                "I prefer Tauri for the "
+                "JARVIS desktop interface."
+            )
+        )
+
+        self.assertFalse(
+            result
         )
 
     # ==================================================
