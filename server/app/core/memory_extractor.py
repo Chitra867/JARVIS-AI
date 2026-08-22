@@ -203,7 +203,7 @@ class MemoryExtractor:
             - self.GENERIC_KEY_TOKENS
         )
 
-        # ==================================================
+    # ==================================================
     # ONE-TIME REQUEST DETECTION
     # ==================================================
 
@@ -217,6 +217,11 @@ class MemoryExtractor:
             .lower()
             .rstrip("?.!")
         )
+
+        # --------------------------------------------------
+        # Durable statements should still be eligible
+        # for long-term memory extraction.
+        # --------------------------------------------------
 
         durable_markers = (
             "i prefer ",
@@ -239,6 +244,10 @@ class MemoryExtractor:
             for marker in durable_markers
         ):
             return False
+
+        # --------------------------------------------------
+        # Ordinary one-time commands / requests
+        # --------------------------------------------------
 
         request_prefixes = (
             "write ",
@@ -287,11 +296,39 @@ class MemoryExtractor:
             "sleep ",
             "take screenshot",
             "capture screenshot",
+            "compare ",
+            "contrast ",
+            "recommend ",
+            "suggest ",
+            "review ",
+            "evaluate ",
         )
 
         if normalized.startswith(
             request_prefixes
         ):
+            return True
+
+        # --------------------------------------------------
+        # Short contextual questions:
+        #
+        # Why?
+        # How?
+        # What?
+        # Which?
+        # --------------------------------------------------
+
+        single_word_questions = {
+            "what",
+            "why",
+            "how",
+            "when",
+            "where",
+            "who",
+            "which",
+        }
+
+        if normalized in single_word_questions:
             return True
 
         question_prefixes = (
@@ -324,7 +361,7 @@ class MemoryExtractor:
         return False
 
     # ==================================================
-    # SKIP MEMORY-CONTROL COMMANDS
+    # SKIP NON-LEARNING COMMANDS
     # ==================================================
 
     def _should_skip_extraction(
@@ -373,6 +410,8 @@ class MemoryExtractor:
         ):
             return True
 
+        # Explicit remember commands are handled
+        # deterministically by MemorySkill.
         if normalized.startswith(
             (
                 "remember ",
@@ -602,8 +641,7 @@ class MemoryExtractor:
                 f"key={memory['memory_key']} | "
                 f"content={memory['content']}"
             )
-            for memory
-            in candidates
+            for memory in candidates
         )
 
         if not existing_context:
@@ -611,8 +649,8 @@ class MemoryExtractor:
                 "No relevant active memories."
             )
 
-        # assistant_message is intentionally NOT included
-        # in the prompt as factual evidence.
+        # Assistant response must never be factual
+        # evidence for memory creation.
         _ = assistant_message
 
         prompt = f"""
@@ -745,6 +783,8 @@ DO NOT SAVE:
 - casual conversation
 - ordinary computer commands
 - one-time questions
+- comparison requests
+- recommendation requests
 - memory-inspection commands
 - forget/delete commands
 - JARVIS-generated advice
@@ -922,7 +962,7 @@ If nothing should change:
             return
 
         # ==================================================
-        # REMEMBER
+        # ONLY REMEMBER OPERATIONS ARE VALID
         # ==================================================
 
         if operation != "remember":
@@ -1087,8 +1127,8 @@ If nothing should change:
                 ):
                     continue
 
-                # LLM may supersede ONLY candidates
-                # that were actually shown to it.
+                # Ollama may supersede ONLY records
+                # that were actually supplied as candidates.
                 if (
                     memory_id > 0
                     and memory_id
@@ -1157,12 +1197,12 @@ If nothing should change:
                     memory_key,
                 )
 
-                # Preserve the valid memory content but
-                # do not give it a dangerous stable key.
+                # Keep valid memory content but remove
+                # an unsafe generated key.
                 memory_key = ""
 
-                # Without a trusted stable key, do not
-                # automatically supersede anything.
+                # A memory without a trusted stable key
+                # must not supersede existing records.
                 supersedes = []
 
         # ==================================================

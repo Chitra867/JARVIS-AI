@@ -38,7 +38,9 @@ class MemoryRegressionTests(unittest.TestCase):
     # BASIC SAVE / SEARCH
     # ==================================================
 
-    def test_save_and_search_record(self) -> None:
+    def test_save_and_search_record(
+        self,
+    ) -> None:
         memory_id = self.memory.save_memory(
             memory_type="preference",
             content=(
@@ -100,9 +102,12 @@ class MemoryRegressionTests(unittest.TestCase):
             new_id
         )
 
-        records = self.memory.get_all_memories(
-            include_inactive=True,
-            limit=20,
+        records = (
+            self.memory
+            .get_all_memories(
+                include_inactive=True,
+                limit=20,
+            )
         )
 
         by_id = {
@@ -179,7 +184,9 @@ class MemoryRegressionTests(unittest.TestCase):
     # FORGET BY KEY
     # ==================================================
 
-    def test_forget_by_key(self) -> None:
+    def test_forget_by_key(
+        self,
+    ) -> None:
         self.memory.save_memory(
             memory_type="fact",
             content=(
@@ -302,14 +309,31 @@ class MemoryExtractorSafetyTests(
     unittest.TestCase
 ):
     def setUp(self) -> None:
-        self.extractor = (
-            MemoryExtractor()
-        )
+        self.extractor = MemoryExtractor()
 
     def tearDown(self) -> None:
         self.extractor.executor.shutdown(
             wait=True,
             cancel_futures=True,
+        )
+
+    # ==================================================
+    # COMPARISON REQUEST FILTERING
+    # ==================================================
+
+    def test_compare_request_is_skipped(
+        self,
+    ) -> None:
+        result = (
+            self.extractor
+            ._should_skip_extraction(
+                "Compare React and Vue "
+                "for building a dashboard."
+            )
+        )
+
+        self.assertTrue(
+            result
         )
 
     # ==================================================
@@ -344,6 +368,42 @@ class MemoryExtractorSafetyTests(
         self.assertTrue(
             result
         )
+
+    # ==================================================
+    # SINGLE-WORD FOLLOW-UP QUESTIONS
+    # ==================================================
+
+    def test_single_word_why_is_skipped(
+        self,
+    ) -> None:
+        result = (
+            self.extractor
+            ._should_skip_extraction(
+                "Why?"
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+    def test_single_word_how_is_skipped(
+        self,
+    ) -> None:
+        result = (
+            self.extractor
+            ._should_skip_extraction(
+                "How?"
+            )
+        )
+
+        self.assertTrue(
+            result
+        )
+
+    # ==================================================
+    # DURABLE PREFERENCE SHOULD BE EXTRACTED
+    # ==================================================
 
     def test_durable_preference_is_not_skipped(
         self,

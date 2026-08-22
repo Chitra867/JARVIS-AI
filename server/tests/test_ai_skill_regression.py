@@ -35,6 +35,37 @@ class AISkillRegressionTests(
         )
 
     # ==================================================
+    # DIRECT RESPONSE BEHAVIOR
+    # ==================================================
+
+    def test_prompt_requires_direct_user_response(
+        self,
+    ) -> None:
+        prompt = (
+            self.skill
+            ._build_prompt(
+                command="Why?",
+                memory_context=(
+                    "- No relevant long-term memory."
+                ),
+                conversation_context=(
+                    "USER: Compare React and Vue.\n"
+                    "ASSISTANT: I would choose Vue."
+                ),
+            )
+        )
+
+        self.assertIn(
+            "never describe the user's intent",
+            prompt.lower(),
+        )
+
+        self.assertIn(
+            "answer as jarvis directly",
+            prompt.lower(),
+        )
+
+    # ==================================================
     # MEMORY CONTEXT
     # ==================================================
 
@@ -182,7 +213,7 @@ class AISkillRegressionTests(
         )
 
     # ==================================================
-    # PROMPT
+    # PROMPT CONTEXT
     # ==================================================
 
     def test_prompt_contains_all_context(
@@ -219,6 +250,160 @@ class AISkillRegressionTests(
         )
 
     # ==================================================
+    # SHORT FOLLOW-UP DETECTION
+    # ==================================================
+
+    def test_short_follow_up_detection(
+        self,
+    ) -> None:
+        self.assertTrue(
+            self.skill
+            ._is_short_follow_up(
+                "Why?"
+            )
+        )
+
+        self.assertTrue(
+            self.skill
+            ._is_short_follow_up(
+                "Which one?"
+            )
+        )
+
+        self.assertTrue(
+            self.skill
+            ._is_short_follow_up(
+                "Give me an example"
+            )
+        )
+
+        self.assertFalse(
+            self.skill
+            ._is_short_follow_up(
+                (
+                    "Explain the differences between "
+                    "React and Vue in detail"
+                )
+            )
+        )
+
+    # ==================================================
+    # SHORT FOLLOW-UP PROMPT RULES
+    # ==================================================
+
+    def test_prompt_contains_follow_up_rules(
+        self,
+    ) -> None:
+        prompt = (
+            self.skill
+            ._build_prompt(
+                command="Why?",
+                memory_context=(
+                    "- No relevant long-term memory."
+                ),
+                conversation_context=(
+                    "USER: Compare React and Vue.\n"
+                    "ASSISTANT: I would choose Vue."
+                ),
+            )
+        )
+
+        self.assertIn(
+            "short follow-up",
+            prompt.lower(),
+        )
+
+        self.assertIn(
+            (
+                "previous assistant response "
+                "made a recommendation"
+            ),
+            prompt.lower(),
+        )
+
+        self.assertIn(
+            "Why?",
+            prompt,
+        )
+
+        self.assertIn(
+            "I would choose Vue.",
+            prompt,
+        )
+
+    # ==================================================
+    # RESPONSE CLEANUP
+    # ==================================================
+
+    def test_meta_narration_is_removed(
+        self,
+    ) -> None:
+        answer = (
+            "You're asking why I chose Vue. "
+            "I chose Vue because it is simpler "
+            "for this dashboard."
+        )
+
+        cleaned = (
+            self.skill
+            ._clean_response(
+                answer
+            )
+        )
+
+        self.assertEqual(
+            cleaned,
+            (
+                "I chose Vue because it is simpler "
+                "for this dashboard."
+            ),
+        )
+
+    def test_third_person_meta_narration_is_removed(
+        self,
+    ) -> None:
+        answer = (
+            "The user is asking why Vue was chosen. "
+            "Vue was chosen because it provides "
+            "a simpler development experience."
+        )
+
+        cleaned = (
+            self.skill
+            ._clean_response(
+                answer
+            )
+        )
+
+        self.assertEqual(
+            cleaned,
+            (
+                "Vue was chosen because it provides "
+                "a simpler development experience."
+            ),
+        )
+
+    def test_normal_answer_is_preserved(
+        self,
+    ) -> None:
+        answer = (
+            "I chose Vue because it is simpler "
+            "for this dashboard."
+        )
+
+        cleaned = (
+            self.skill
+            ._clean_response(
+                answer
+            )
+        )
+
+        self.assertEqual(
+            cleaned,
+            answer,
+        )
+
+    # ==================================================
     # SUCCESSFUL OLLAMA RESPONSE
     # ==================================================
 
@@ -250,6 +435,44 @@ class AISkillRegressionTests(
         self.assertEqual(
             result,
             "Tauri is your preferred framework.",
+        )
+
+        mock_post.assert_called_once()
+
+    # ==================================================
+    # RESPONSE CLEANUP THROUGH GENERATOR
+    # ==================================================
+
+    @patch(
+        "app.skills.ai_skill.httpx.post"
+    )
+    def test_generate_response_cleans_meta_narration(
+        self,
+        mock_post,
+    ) -> None:
+        response = MagicMock()
+
+        response.raise_for_status.return_value = None
+
+        response.json.return_value = {
+            "response": (
+                "You're asking why I chose Vue. "
+                "I chose Vue because it is simpler."
+            )
+        }
+
+        mock_post.return_value = response
+
+        result = (
+            self.skill
+            ._generate_response(
+                "test prompt"
+            )
+        )
+
+        self.assertEqual(
+            result,
+            "I chose Vue because it is simpler.",
         )
 
     # ==================================================
