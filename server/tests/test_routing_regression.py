@@ -16,7 +16,9 @@ from app.skills.search_skill import SearchSkill
 from app.skills.time_skill import TimeSkill
 
 
-class RoutingRegressionTests(unittest.TestCase):
+class RoutingRegressionTests(
+    unittest.TestCase
+):
     def setUp(self) -> None:
         self.registry = SkillRegistry()
 
@@ -121,6 +123,18 @@ class RoutingRegressionTests(unittest.TestCase):
         )
 
     # ==================================================
+    # UNSUPPORTED UI ACTION
+    # ==================================================
+
+    def test_type_action_routes_to_guard(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "type hello",
+            ActionGuardSkill,
+        )
+
+    # ==================================================
     # GENERAL AI REQUEST
     # ==================================================
 
@@ -128,8 +142,10 @@ class RoutingRegressionTests(unittest.TestCase):
         self,
     ) -> None:
         self._assert_routes_to(
-            "write a python function "
-            "that adds two numbers",
+            (
+                "write a python function "
+                "that adds two numbers"
+            ),
             AISkill,
         )
 

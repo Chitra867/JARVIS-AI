@@ -53,6 +53,14 @@ class ActionGuardSkill(Skill):
         "sleep ",
         "take screenshot",
         "capture screenshot",
+
+        # Keyboard / mouse / UI actions
+        "type ",
+        "press ",
+        "click ",
+        "scroll ",
+        "drag ",
+        "select ",
     )
 
     def can_handle(
