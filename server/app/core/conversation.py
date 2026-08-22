@@ -1,5 +1,7 @@
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,9 +24,10 @@ class ConversationManager:
 
         self._initialize_database()
 
+    @contextmanager
     def _connect(
         self,
-    ) -> sqlite3.Connection:
+    ) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(
             DATABASE_PATH,
             timeout=30,
@@ -34,7 +37,26 @@ class ConversationManager:
             sqlite3.Row
         )
 
-        return connection
+        connection.execute(
+            "PRAGMA busy_timeout = 30000"
+        )
+
+        connection.execute(
+            "PRAGMA foreign_keys = ON"
+        )
+
+        try:
+            yield connection
+
+        except Exception:
+            connection.rollback()
+            raise
+
+        else:
+            connection.commit()
+
+        finally:
+            connection.close()
 
     def _initialize_database(
         self,
