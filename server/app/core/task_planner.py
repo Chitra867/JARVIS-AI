@@ -34,8 +34,6 @@ class TaskPlanner:
     # STEP STARTS
     # ==================================================
 
-    # These are commands that can reasonably begin
-    # another independent task step.
     STEP_START_PATTERN = (
         r"(?:"
         r"open"
@@ -134,7 +132,7 @@ class TaskPlanner:
     )
 
     # ==================================================
-    # PLAIN "AND" BETWEEN TWO ACTIONS
+    # PLAIN "AND" BETWEEN ACTIONS
     # ==================================================
 
     ACTION_AND_PATTERN = re.compile(
@@ -188,7 +186,7 @@ class TaskPlanner:
         ).strip()
 
         # --------------------------------------------------
-        # Explicit sequencing:
+        # Explicit sequencing
         #
         # open chrome THEN search Python
         # --------------------------------------------------
@@ -202,11 +200,11 @@ class TaskPlanner:
         )
 
         # --------------------------------------------------
-        # Comma-separated actions:
+        # Comma-separated actions
         #
         # open chrome, search Python
         #
-        # But NOT:
+        # But not:
         #
         # search React, Vue and Angular
         # --------------------------------------------------
@@ -220,11 +218,11 @@ class TaskPlanner:
         )
 
         # --------------------------------------------------
-        # Natural "and" between actual commands:
+        # Natural "and" between commands
         #
         # open YouTube and search for tutorial
         #
-        # But NOT:
+        # But not:
         #
         # search React and Vue
         # --------------------------------------------------
@@ -292,6 +290,16 @@ class TaskPlanner:
                 ]
             )
 
+        # ==================================================
+        # APPLY CONTEXT BETWEEN STEPS
+        # ==================================================
+
+        cleaned_parts = (
+            self._apply_step_context(
+                cleaned_parts
+            )
+        )
+
         steps = tuple(
             TaskStep(
                 index=index,
@@ -308,6 +316,182 @@ class TaskPlanner:
             original_command=original,
             steps=steps,
         )
+
+    # ==================================================
+    # STEP CONTEXT
+    # ==================================================
+
+    def _apply_step_context(
+        self,
+        steps: list[str],
+    ) -> list[str]:
+        contextual_steps: list[str] = []
+
+        active_search_provider: (
+            str | None
+        ) = None
+
+        for step in steps:
+            cleaned = (
+                step
+                .strip()
+            )
+
+            normalized = (
+                cleaned
+                .lower()
+                .rstrip("?.!")
+                .strip()
+            )
+
+            # ==================================================
+            # OPEN / LAUNCH PROVIDERS
+            # ==================================================
+
+            if normalized in {
+                "open youtube",
+                "launch youtube",
+                "start youtube",
+            }:
+                active_search_provider = (
+                    "youtube"
+                )
+
+                contextual_steps.append(
+                    cleaned
+                )
+
+                continue
+
+            if normalized in {
+                "open chrome",
+                "launch chrome",
+                "start chrome",
+                "open google",
+                "launch google",
+                "start google",
+            }:
+                active_search_provider = (
+                    "google"
+                )
+
+                contextual_steps.append(
+                    cleaned
+                )
+
+                continue
+
+            # ==================================================
+            # EXPLICIT YOUTUBE SEARCH
+            # ==================================================
+
+            if (
+                normalized.startswith(
+                    "search youtube for "
+                )
+                or normalized.startswith(
+                    "youtube search "
+                )
+            ):
+                active_search_provider = (
+                    "youtube"
+                )
+
+                contextual_steps.append(
+                    cleaned
+                )
+
+                continue
+
+            # ==================================================
+            # EXPLICIT GOOGLE SEARCH
+            # ==================================================
+
+            if (
+                normalized.startswith(
+                    "search google for "
+                )
+                or normalized.startswith(
+                    "google "
+                )
+            ):
+                active_search_provider = (
+                    "google"
+                )
+
+                contextual_steps.append(
+                    cleaned
+                )
+
+                continue
+
+            # ==================================================
+            # GENERIC SEARCH
+            # ==================================================
+
+            generic_prefixes = (
+                "search for ",
+                "search ",
+            )
+
+            matched_prefix: (
+                str | None
+            ) = None
+
+            for prefix in generic_prefixes:
+                if normalized.startswith(
+                    prefix
+                ):
+                    matched_prefix = (
+                        prefix
+                    )
+
+                    break
+
+            # --------------------------------------------------
+            # Generic search after YouTube inherits YouTube.
+            # --------------------------------------------------
+
+            if (
+                matched_prefix is not None
+                and active_search_provider
+                == "youtube"
+            ):
+                query = (
+                    cleaned[
+                        len(matched_prefix):
+                    ]
+                    .strip()
+                    .rstrip("?.!")
+                    .strip()
+                )
+
+                if query:
+                    contextual_steps.append(
+                        (
+                            "search youtube for "
+                            f"{query}"
+                        )
+                    )
+
+                else:
+                    contextual_steps.append(
+                        cleaned
+                    )
+
+                continue
+
+            # --------------------------------------------------
+            # Generic search after Chrome/Google remains
+            # generic because SearchSkill already defaults
+            # generic web search to Google.
+            # --------------------------------------------------
+
+            contextual_steps.append(
+                cleaned
+            )
+
+        return contextual_steps
 
 
 task_planner = TaskPlanner()

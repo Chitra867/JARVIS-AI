@@ -185,7 +185,7 @@ class TaskPlannerTests(
         )
 
     # ==================================================
-    # PLAIN AND BETWEEN ACTIONS
+    # YOUTUBE CONTEXT THROUGH "AND"
     # ==================================================
 
     def test_plain_and_between_actions_is_split(
@@ -205,7 +205,70 @@ class TaskPlannerTests(
             ],
             [
                 "open YouTube",
-                "search for Python tutorials",
+                (
+                    "search youtube for "
+                    "Python tutorials"
+                ),
+            ],
+        )
+
+    # ==================================================
+    # YOUTUBE PROVIDER INHERITANCE
+    # ==================================================
+
+    def test_search_after_opening_youtube_uses_youtube(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            (
+                "open YouTube then "
+                "search for FastAPI tutorial"
+            )
+        )
+
+        self.assertEqual(
+            len(plan.steps),
+            2,
+        )
+
+        self.assertEqual(
+            plan.steps[0].command,
+            "open YouTube",
+        )
+
+        self.assertEqual(
+            plan.steps[1].command,
+            (
+                "search youtube for "
+                "FastAPI tutorial"
+            ),
+        )
+
+    # ==================================================
+    # EXPLICIT YOUTUBE SEARCH
+    # ==================================================
+
+    def test_explicit_youtube_search_is_preserved(
+        self,
+    ) -> None:
+        plan = self.planner.plan(
+            (
+                "open YouTube and "
+                "search youtube for Python decorators"
+            )
+        )
+
+        self.assertEqual(
+            [
+                step.command
+                for step in plan.steps
+            ],
+            [
+                "open YouTube",
+                (
+                    "search youtube for "
+                    "Python decorators"
+                ),
             ],
         )
 
@@ -239,7 +302,10 @@ class TaskPlannerTests(
                 "Open Chrome",
                 "search for Python decorators",
                 "open YouTube",
-                "search for a tutorial.",
+                (
+                    "search youtube for "
+                    "a tutorial"
+                ),
             ],
         )
 
