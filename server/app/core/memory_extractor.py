@@ -53,6 +53,67 @@ class MemoryExtractor:
         r"\bprivate[\s_-]?key\b",
     )
 
+    TOKEN_STOP_WORDS = {
+        "the",
+        "a",
+        "an",
+        "i",
+        "my",
+        "me",
+        "you",
+        "your",
+        "user",
+        "users",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "to",
+        "of",
+        "for",
+        "in",
+        "on",
+        "at",
+        "and",
+        "or",
+        "with",
+        "that",
+        "this",
+        "it",
+        "use",
+        "uses",
+        "using",
+        "used",
+        "prefer",
+        "prefers",
+        "preferred",
+        "preference",
+        "want",
+        "wants",
+        "wanted",
+        "currently",
+        "current",
+        "now",
+    }
+
+    GENERIC_KEY_TOKENS = {
+        "user",
+        "users",
+        "preference",
+        "preferred",
+        "fact",
+        "project",
+        "goal",
+        "decision",
+        "instruction",
+        "setting",
+        "settings",
+        "value",
+        "current",
+    }
+
     def __init__(self) -> None:
         self.executor = (
             ThreadPoolExecutor(
@@ -63,6 +124,278 @@ class MemoryExtractor:
             )
         )
 
+    # ==================================================
+    # TOKEN / KEY HELPERS
+    # ==================================================
+
+    def _tokens(
+        self,
+        text: str,
+    ) -> set[str]:
+        return set(
+            re.findall(
+                r"[a-zA-Z0-9_+#-]+",
+                text.lower(),
+            )
+        )
+
+    def _meaningful_tokens(
+        self,
+        text: str,
+    ) -> set[str]:
+        return (
+            self._tokens(text)
+            - self.TOKEN_STOP_WORDS
+        )
+
+    def _normalize_key(
+        self,
+        memory_key: str | None,
+    ) -> str | None:
+        if not memory_key:
+            return None
+
+        value = (
+            memory_key
+            .strip()
+            .lower()
+        )
+
+        value = re.sub(
+            r"[^a-z0-9_.-]+",
+            ".",
+            value,
+        )
+
+        value = re.sub(
+            r"\.+",
+            ".",
+            value,
+        )
+
+        value = value.strip(".")
+
+        return value or None
+
+    def _key_tokens(
+        self,
+        memory_key: str,
+    ) -> set[str]:
+        normalized = (
+            self._normalize_key(
+                memory_key
+            )
+        )
+
+        if not normalized:
+            return set()
+
+        split_key = re.sub(
+            r"[._-]+",
+            " ",
+            normalized,
+        )
+
+        return (
+            self._tokens(
+                split_key
+            )
+            - self.GENERIC_KEY_TOKENS
+        )
+
+    # ==================================================
+    # SKIP MEMORY-CONTROL COMMANDS
+    # ==================================================
+
+    def _should_skip_extraction(
+        self,
+        user_message: str,
+    ) -> bool:
+        normalized = (
+            user_message
+            .strip()
+            .lower()
+            .rstrip("?.!")
+        )
+
+        exact_commands = {
+            "show active memories",
+            "show active memory",
+            "show all active memories",
+            "what have you learned recently",
+            "what did you learn recently",
+            "show recent memories",
+            "show recent memory",
+        }
+
+        if normalized in exact_commands:
+            return True
+
+        memory_query_prefixes = (
+            "what do you remember",
+            "what do you know about",
+            "what have you learned",
+            "show my memories",
+            "show my memory",
+            "show what you remember",
+            "show what you know",
+            "list my memories",
+            "list what you remember",
+        )
+
+        if normalized.startswith(
+            memory_query_prefixes
+        ):
+            return True
+
+        if self._is_explicit_forget_request(
+            user_message
+        ):
+            return True
+
+        return False
+
+    # ==================================================
+    # EXPLICIT FORGET CHECK
+    # ==================================================
+
+    def _is_explicit_forget_request(
+        self,
+        user_message: str,
+    ) -> bool:
+        normalized = (
+            user_message
+            .strip()
+            .lower()
+        )
+
+        forget_prefixes = (
+            "forget ",
+            "forget that ",
+            "forget about ",
+            "forget everything about ",
+            "forget memory ",
+            "remove from memory ",
+            "delete from memory ",
+            "stop remembering ",
+        )
+
+        return normalized.startswith(
+            forget_prefixes
+        )
+
+    # ==================================================
+    # USER-GROUNDING SAFETY
+    # ==================================================
+
+    def _content_is_grounded(
+        self,
+        content: str,
+        user_message: str,
+    ) -> bool:
+        user_tokens = (
+            self._meaningful_tokens(
+                user_message
+            )
+        )
+
+        content_tokens = (
+            self._meaningful_tokens(
+                content
+            )
+        )
+
+        if (
+            not user_tokens
+            or not content_tokens
+        ):
+            return False
+
+        shared = (
+            user_tokens
+            & content_tokens
+        )
+
+        required_overlap = min(
+            2,
+            len(user_tokens),
+            len(content_tokens),
+        )
+
+        return (
+            len(shared)
+            >= required_overlap
+        )
+
+    # ==================================================
+    # MEMORY KEY GROUNDING
+    # ==================================================
+
+    def _memory_key_is_grounded(
+        self,
+        memory_key: str,
+        user_message: str,
+        content: str,
+        candidates: list[
+            dict[str, object]
+        ],
+    ) -> bool:
+        normalized_key = (
+            self._normalize_key(
+                memory_key
+            )
+        )
+
+        if not normalized_key:
+            return False
+
+        # Existing known key is already trusted.
+        for candidate in candidates:
+            candidate_key = (
+                self._normalize_key(
+                    str(
+                        candidate.get(
+                            "memory_key",
+                            "",
+                        )
+                    )
+                )
+            )
+
+            if (
+                candidate_key
+                and candidate_key
+                == normalized_key
+            ):
+                return True
+
+        key_tokens = (
+            self._key_tokens(
+                normalized_key
+            )
+        )
+
+        if not key_tokens:
+            return False
+
+        evidence_tokens = (
+            self._meaningful_tokens(
+                user_message
+            )
+            | self._meaningful_tokens(
+                content
+            )
+        )
+
+        return bool(
+            key_tokens
+            & evidence_tokens
+        )
+
+    # ==================================================
+    # BACKGROUND SUBMIT
+    # ==================================================
+
     def submit(
         self,
         user_message: str,
@@ -71,7 +404,22 @@ class MemoryExtractor:
         source_message_id:
             int | None = None,
     ) -> None:
-        if not user_message.strip():
+        user_message = (
+            user_message
+            .strip()
+        )
+
+        assistant_message = (
+            assistant_message
+            .strip()
+        )
+
+        if not user_message:
+            return
+
+        if self._should_skip_extraction(
+            user_message
+        ):
             return
 
         try:
@@ -89,6 +437,10 @@ class MemoryExtractor:
                 error,
             )
 
+    # ==================================================
+    # EXTRACT AND STORE
+    # ==================================================
+
     def _extract_and_store(
         self,
         user_message: str,
@@ -104,6 +456,11 @@ class MemoryExtractor:
                 limit=20,
             )
         )
+
+        candidate_ids = {
+            int(memory["id"])
+            for memory in candidates
+        }
 
         existing_context = "\n".join(
             (
@@ -121,51 +478,62 @@ class MemoryExtractor:
                 "No relevant active memories."
             )
 
+        # assistant_message is intentionally NOT included
+        # in the prompt as factual evidence.
+        _ = assistant_message
+
         prompt = f"""
 You are the long-term memory manager for JARVIS.
 
-Analyze what the USER said.
+Analyze ONLY what the USER explicitly stated.
 
 USER MESSAGE:
 {user_message}
 
-JARVIS RESPONSE:
-{assistant_message}
-
 RELEVANT ACTIVE MEMORIES:
 {existing_context}
 
-Your job is to determine whether memory should be:
+Decide whether durable user information should be:
 
 1. REMEMBERED
 2. UPDATED / SUPERSEDED
-3. FORGOTTEN
-4. LEFT UNCHANGED
+3. LEFT UNCHANGED
 
-IMPORTANT:
-The user's newest explicit statement has priority over
-older memories.
+IMPORTANT SAFETY RULES:
 
-If a new statement changes an older preference, decision,
-project configuration, instruction, goal, or fact:
+- Only information explicitly stated by the USER may
+  become long-term memory.
 
-- create the NEW memory
-- reuse the old memory_key when available
-- include the IDs of the old memories in
-  supersedes_memory_ids
+- Never use JARVIS's response as evidence.
+
+- Never create memories from guesses or implications.
+
+- Memory inspection commands must not become memories.
+
+- Forget/delete commands are handled by a deterministic
+  MemoryControlSkill. For any forget/delete request,
+  return an empty actions list.
+
+- supersedes_memory_ids may contain ONLY IDs shown in
+  RELEVANT ACTIVE MEMORIES.
+
+- When updating an existing conceptual property, reuse
+  its existing memory_key exactly.
 
 Example:
 
 Existing:
+
 ID=12
 key=jarvis.desktop_interface
 content=The user prefers React for the JARVIS desktop interface.
 
 User:
+
 "I don't use React for JARVIS anymore.
 I prefer Tauri instead."
 
-Correct action:
+Correct:
 
 {{
   "actions": [
@@ -181,14 +549,9 @@ Correct action:
   ]
 }}
 
-If the existing memory does not yet have a memory_key,
-you may create a sensible stable key and still include its
-ID in supersedes_memory_ids.
-
 MEMORY KEY RULES:
 
-Use a stable lowercase dot-separated key describing the
-subject and property.
+Use stable lowercase dot-separated keys.
 
 Examples:
 
@@ -198,45 +561,40 @@ campusconnect.framework
 response.style
 project.jarvis.voice_engine
 
-Do NOT put the actual changing value in the key.
+The key must describe the same subject/property as
+the user's statement.
+
+Never guess an unrelated property.
+
+Example:
+
+Content:
+"The user prefers Tauri for the JARVIS desktop interface."
 
 GOOD:
 jarvis.desktop_interface
 
 BAD:
-jarvis.react_interface
+ai.preferred_language
 
-This lets future values replace older values.
+Do not put changing values in keys.
 
-FORGETTING:
+GOOD:
+jarvis.desktop_interface
 
-If the user explicitly asks JARVIS to forget stored
-information, return:
-
-{{
-  "actions": [
-    {{
-      "operation": "forget",
-      "memory_ids": [12]
-    }}
-  ]
-}}
-
-Only forget information when the USER explicitly asks
-to forget/remove it.
+BAD:
+jarvis.tauri_interface
 
 PRECISION RULES:
 
-- Preserve exact technologies and names.
+- Preserve exact technologies.
+- Preserve names.
 - Preserve programming languages.
 - Preserve project names.
 - Preserve frameworks.
 - Preserve tools.
 - Preserve important values.
 - Never replace precise information with vague wording.
-- Save only information originating from the USER.
-- Never treat the JARVIS response as proof of a user fact.
-- Never invent information.
 
 SAVE durable information such as:
 
@@ -245,7 +603,7 @@ SAVE durable information such as:
 - long-term goals
 - decisions
 - persistent instructions
-- important stable facts
+- stable facts
 
 DO NOT SAVE:
 
@@ -254,6 +612,8 @@ DO NOT SAVE:
 - casual conversation
 - ordinary computer commands
 - one-time questions
+- memory-inspection commands
+- forget/delete commands
 - JARVIS-generated advice
 - guesses
 - passwords
@@ -353,11 +713,25 @@ If nothing should change:
             for action in actions:
                 self._process_action(
                     action=action,
+
+                    user_message=(
+                        user_message
+                    ),
+
                     conversation_id=(
                         conversation_id
                     ),
+
                     source_message_id=(
                         source_message_id
+                    ),
+
+                    candidates=(
+                        candidates
+                    ),
+
+                    candidate_ids=(
+                        candidate_ids
                     ),
                 )
 
@@ -374,15 +748,20 @@ If nothing should change:
             )
 
     # ==================================================
-    # PROCESS ACTION
+    # PROCESS MEMORY ACTION
     # ==================================================
 
     def _process_action(
         self,
         action: object,
+        user_message: str,
         conversation_id: int,
         source_message_id:
             int | None,
+        candidates: list[
+            dict[str, object]
+        ],
+        candidate_ids: set[int],
     ) -> None:
         if not isinstance(
             action,
@@ -397,39 +776,21 @@ If nothing should change:
             )
         ).strip().lower()
 
+        # ==================================================
+        # EXTRACTOR MAY NEVER DELETE MEMORY
+        # ==================================================
+
         if operation == "forget":
-            memory_ids = (
-                action.get(
-                    "memory_ids",
-                    [],
-                )
+            print(
+                "Rejected extractor forget action. "
+                "Use MemoryControlSkill."
             )
 
-            if not isinstance(
-                memory_ids,
-                list,
-            ):
-                return
-
-            clean_ids: list[int] = []
-
-            for value in memory_ids:
-                try:
-                    clean_ids.append(
-                        int(value)
-                    )
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    continue
-
-            if clean_ids:
-                memory_manager.forget_memory_ids(
-                    clean_ids
-                )
-
             return
+
+        # ==================================================
+        # REMEMBER
+        # ==================================================
 
         if operation != "remember":
             return
@@ -465,6 +826,21 @@ If nothing should change:
             len(content) < 5
             or len(content) > 400
         ):
+            return
+
+        # ==================================================
+        # CONTENT MUST COME FROM USER
+        # ==================================================
+
+        if not self._content_is_grounded(
+            content=content,
+            user_message=user_message,
+        ):
+            print(
+                "Rejected ungrounded memory:",
+                content,
+            )
+
             return
 
         try:
@@ -514,6 +890,10 @@ If nothing should change:
             content.lower()
         )
 
+        # ==================================================
+        # REJECT VAGUE MEMORY
+        # ==================================================
+
         if any(
             phrase in content_lower
             for phrase
@@ -525,6 +905,10 @@ If nothing should change:
             )
 
             return
+
+        # ==================================================
+        # REJECT SENSITIVE MEMORY
+        # ==================================================
 
         if any(
             re.search(
@@ -541,6 +925,10 @@ If nothing should change:
 
             return
 
+        # ==================================================
+        # SUPERSEDE IDS
+        # ==================================================
+
         raw_supersedes = (
             action.get(
                 "supersedes_memory_ids",
@@ -556,14 +944,97 @@ If nothing should change:
         ):
             for value in raw_supersedes:
                 try:
-                    supersedes.append(
-                        int(value)
+                    memory_id = int(
+                        value
                     )
+
                 except (
                     TypeError,
                     ValueError,
                 ):
                     continue
+
+                # LLM may supersede ONLY candidates
+                # that were actually shown to it.
+                if (
+                    memory_id > 0
+                    and memory_id
+                    in candidate_ids
+                ):
+                    supersedes.append(
+                        memory_id
+                    )
+
+                elif memory_id > 0:
+                    print(
+                        "Rejected unknown supersede ID:",
+                        memory_id,
+                    )
+
+        # ==================================================
+        # FORCE EXISTING STABLE KEY WHEN UPDATING
+        # ==================================================
+
+        superseded_keys: set[str] = set()
+
+        for candidate in candidates:
+            candidate_id = int(
+                candidate["id"]
+            )
+
+            if candidate_id not in supersedes:
+                continue
+
+            candidate_key = (
+                self._normalize_key(
+                    str(
+                        candidate.get(
+                            "memory_key",
+                            "",
+                        )
+                    )
+                )
+            )
+
+            if candidate_key:
+                superseded_keys.add(
+                    candidate_key
+                )
+
+        if len(superseded_keys) == 1:
+            memory_key = next(
+                iter(
+                    superseded_keys
+                )
+            )
+
+        # ==================================================
+        # VALIDATE NEW MEMORY KEY
+        # ==================================================
+
+        elif memory_key:
+            if not self._memory_key_is_grounded(
+                memory_key=memory_key,
+                user_message=user_message,
+                content=content,
+                candidates=candidates,
+            ):
+                print(
+                    "Rejected ungrounded memory key:",
+                    memory_key,
+                )
+
+                # Preserve the valid memory content but
+                # do not give it a dangerous stable key.
+                memory_key = ""
+
+                # Without a trusted stable key, do not
+                # automatically supersede anything.
+                supersedes = []
+
+        # ==================================================
+        # SAVE THROUGH MEMORY MANAGER
+        # ==================================================
 
         memory_manager.save_memory(
             memory_type=(

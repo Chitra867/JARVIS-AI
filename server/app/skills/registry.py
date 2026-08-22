@@ -9,6 +9,9 @@ from app.skills.time_skill import TimeSkill
 from app.skills.windows_control_skill import WindowsControlSkill
 from app.skills.media_skill import MediaSkill
 from app.skills.action_guard_skill import ActionGuardSkill
+from app.skills.memory_control_skill import (
+    MemoryControlSkill,
+)
 
 
 class SkillRegistry:
@@ -21,12 +24,18 @@ class SkillRegistry:
             WindowsControlSkill(),
             MediaSkill(),
             AppLauncherSkill(),
+
+            # Explicit deterministic memory commands
+            # MUST come before general MemorySkill.
+            MemoryControlSkill(),
+
+            # General remember/memory behavior.
             MemorySkill(),
 
             # Catch unsupported real-world actions.
             ActionGuardSkill(),
 
-            # Keep AI last because it is the fallback.
+            # AI fallback must always stay last.
             AISkill(),
         ]
 

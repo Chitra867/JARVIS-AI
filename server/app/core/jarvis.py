@@ -8,6 +8,10 @@ from app.core.memory_extractor import (
     memory_extractor,
 )
 
+from app.skills.memory_control_skill import (
+    MemoryControlSkill,
+)
+
 from app.skills.registry import (
     skill_registry,
 )
@@ -27,10 +31,9 @@ class Jarvis:
         if not normalized_command:
             return "Yes?"
 
-
-        # ---------------------------------------------
-        # Persistent conversation
-        # ---------------------------------------------
+        # ==============================================
+        # PERSISTENT CONVERSATION
+        # ==============================================
 
         conversation_id = (
             conversation_manager
@@ -46,10 +49,11 @@ class Jarvis:
             )
         )
 
+        skill = None
 
-        # ---------------------------------------------
-        # Normal greeting
-        # ---------------------------------------------
+        # ==============================================
+        # GREETING
+        # ==============================================
 
         if (
             normalized_command.lower()
@@ -64,10 +68,9 @@ class Jarvis:
             )
 
         else:
-            # -----------------------------------------
-            # Route to a REAL skill first.
-            # AISkill remains fallback.
-            # -----------------------------------------
+            # ==========================================
+            # SKILL ROUTING
+            # ==========================================
 
             skill = (
                 skill_registry
@@ -82,6 +85,7 @@ class Jarvis:
                         normalized_command
                     )
                 )
+
             else:
                 response = (
                     "I don't have a skill "
@@ -89,10 +93,9 @@ class Jarvis:
                     "yet."
                 )
 
-
-        # ---------------------------------------------
-        # Save JARVIS response
-        # ---------------------------------------------
+        # ==============================================
+        # SAVE ASSISTANT RESPONSE
+        # ==============================================
 
         conversation_manager.add_message(
             conversation_id,
@@ -100,39 +103,59 @@ class Jarvis:
             response,
         )
 
+        # ==============================================
+        # MEMORY EXTRACTION
+        # ==============================================
+        #
+        # Memory-control commands must NEVER be sent
+        # back into automatic learning.
+        #
+        # Otherwise:
+        #
+        # forget X
+        #     ↓
+        # extractor sees X again
+        #     ↓
+        # may recreate/supersede memory ❌
+        #
+        # ==============================================
 
-        # ---------------------------------------------
-        # Learn useful facts in background.
-        # Does NOT delay spoken response.
-        # ---------------------------------------------
+        if not isinstance(
+            skill,
+            MemoryControlSkill,
+        ):
+            memory_extractor.submit(
+                user_message=(
+                    normalized_command
+                ),
 
-        memory_extractor.submit(
-            user_message=(
-                normalized_command
-            ),
+                assistant_message=(
+                    response
+                ),
 
-            assistant_message=(
-                response
-            ),
+                conversation_id=(
+                    conversation_id
+                ),
 
-            conversation_id=(
-                conversation_id
-            ),
-
-            source_message_id=(
-                user_message_id
-            ),
-        )
-
+                source_message_id=(
+                    user_message_id
+                ),
+            )
 
         return response
 
+    # ==================================================
+    # CLEAN COMMAND
+    # ==================================================
 
     def _clean_command(
         self,
         command: str,
     ) -> str:
-        text = command.strip()
+        text = (
+            command
+            .strip()
+        )
 
         text = re.sub(
             r"^(?:"
@@ -147,7 +170,10 @@ class Jarvis:
             flags=re.IGNORECASE,
         )
 
-        return text.strip()
+        return (
+            text
+            .strip()
+        )
 
 
 jarvis = Jarvis()

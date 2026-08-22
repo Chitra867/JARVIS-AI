@@ -3,9 +3,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from app.core.conversation import (
-    DATABASE_PATH,
-)
+from app.core.conversation import DATABASE_PATH
 
 
 class MemoryManager:
@@ -44,8 +42,10 @@ class MemoryManager:
             timeout=30,
         )
 
-        connection.row_factory = (
-            sqlite3.Row
+        connection.row_factory = sqlite3.Row
+
+        connection.execute(
+            "PRAGMA busy_timeout = 30000"
         )
 
         return connection
@@ -54,10 +54,6 @@ class MemoryManager:
         self,
     ) -> None:
         with self._connect() as connection:
-            # --------------------------------------------------
-            # Fresh database schema
-            # --------------------------------------------------
-
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memories
@@ -108,10 +104,6 @@ class MemoryManager:
                 """
             )
 
-            # --------------------------------------------------
-            # Existing database migration
-            # --------------------------------------------------
-
             existing_columns = {
                 str(row["name"])
                 for row
@@ -156,10 +148,6 @@ class MemoryManager:
                         """
                     )
 
-            # --------------------------------------------------
-            # Indexes
-            # --------------------------------------------------
-
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS
@@ -195,7 +183,7 @@ class MemoryManager:
             connection.commit()
 
     # ==================================================
-    # BASIC HELPERS
+    # HELPERS
     # ==================================================
 
     def _now(
@@ -254,7 +242,7 @@ class MemoryManager:
     ) -> set[str]:
         return set(
             re.findall(
-                r"[a-zA-Z0-9_+#.-]+",
+                r"[a-zA-Z0-9_+#-]+",
                 text.lower(),
             )
         )
@@ -309,12 +297,34 @@ class MemoryManager:
             "that",
             "it",
             "with",
+            "about",
         }
 
         return (
             self._tokens(text)
             - stop_words
         )
+
+    def _record_search_tokens(
+        self,
+        content: str,
+        memory_key: str | None,
+    ) -> set[str]:
+        tokens = (
+            self._meaningful_tokens(
+                content
+            )
+        )
+
+        if memory_key:
+            tokens |= self._tokens(
+                memory_key.replace(
+                    ".",
+                    " ",
+                )
+            )
+
+        return tokens
 
     # ==================================================
     # SUPERSEDE SAFETY
@@ -327,14 +337,6 @@ class MemoryManager:
         new_content: str,
         new_memory_key: str | None,
     ) -> bool:
-        """
-        Deterministic safety layer.
-
-        The LLM may propose which memories should be
-        superseded, but Python decides whether that
-        relationship is actually safe.
-        """
-
         old_key = (
             self._normalize_key(
                 old_memory_key
@@ -347,14 +349,6 @@ class MemoryManager:
             )
         )
 
-        # --------------------------------------------------
-        # Strongest case:
-        # both memories have stable keys.
-        #
-        # They may supersede each other ONLY when
-        # the keys identify exactly the same property.
-        # --------------------------------------------------
-
         if (
             old_key
             and new_key
@@ -363,13 +357,6 @@ class MemoryManager:
                 old_key
                 == new_key
             )
-
-        # --------------------------------------------------
-        # Legacy memories may not have memory_key.
-        #
-        # Require meaningful topic overlap before allowing
-        # a legacy memory to be superseded.
-        # --------------------------------------------------
 
         old_tokens = (
             self._meaningful_tokens(
@@ -394,26 +381,6 @@ class MemoryManager:
             & new_tokens
         )
 
-        # Require at least two meaningful shared
-        # topic words for un-keyed legacy memories.
-        #
-        # Example:
-        #
-        # React JARVIS desktop interface
-        # Tauri JARVIS desktop interface
-        #
-        # shared:
-        # jarvis, desktop, interface
-        #
-        # -> safe
-        #
-        # Python
-        # Tauri JARVIS desktop interface
-        #
-        # shared:
-        # none
-        #
-        # -> reject
         return (
             len(shared_tokens)
             >= 2
@@ -437,16 +404,22 @@ class MemoryManager:
         supersedes_memory_ids:
             list[int] | None = None,
     ) -> int | None:
-        content = content.strip()
-
-        if not content:
-            return None
+        content = (
+            content
+            .strip()
+        )
 
         memory_type = (
             memory_type
             .strip()
             .lower()
         )
+
+        if (
+            not content
+            or not memory_type
+        ):
+            return None
 
         normalized = (
             self._normalize(
@@ -466,7 +439,9 @@ class MemoryManager:
             0.0,
             min(
                 1.0,
-                float(importance),
+                float(
+                    importance
+                ),
             ),
         )
 
@@ -474,43 +449,51 @@ class MemoryManager:
             0.0,
             min(
                 1.0,
-                float(confidence),
+                float(
+                    confidence
+                ),
             ),
         )
 
         supersedes: set[int] = set()
 
-        if supersedes_memory_ids:
-            for value in supersedes_memory_ids:
-                try:
-                    memory_id_value = int(
-                        value
-                    )
-                except (
-                    TypeError,
-                    ValueError,
-                ):
-                    continue
+        for value in (
+            supersedes_memory_ids
+            or []
+        ):
+            try:
+                memory_id_value = int(
+                    value
+                )
 
-                if memory_id_value > 0:
-                    supersedes.add(
-                        memory_id_value
-                    )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if (
+                memory_id_value
+                > 0
+            ):
+                supersedes.add(
+                    memory_id_value
+                )
 
         with self._connect() as connection:
-            # --------------------------------------------------
-            # Check whether this exact memory already exists.
-            # --------------------------------------------------
-
             existing = connection.execute(
                 """
                 SELECT
                     id,
+                    memory_key,
                     status
+
                 FROM memories
+
                 WHERE
                     memory_type = ?
                     AND normalized_content = ?
+
                 LIMIT 1
                 """,
                 (
@@ -524,8 +507,6 @@ class MemoryManager:
                     existing["id"]
                 )
 
-                # A newly repeated explicit/current statement
-                # may reactivate an identical old memory.
                 connection.execute(
                     """
                     UPDATE memories
@@ -533,10 +514,12 @@ class MemoryManager:
                         content = ?,
 
                         memory_key =
-                            COALESCE(
-                                ?,
-                                memory_key
-                            ),
+                            CASE
+                                WHEN memory_key IS NULL
+                                    OR TRIM(memory_key) = ''
+                                THEN ?
+                                ELSE memory_key
+                            END,
 
                         importance =
                             MAX(
@@ -586,6 +569,32 @@ class MemoryManager:
                     ),
                 )
 
+                refreshed = connection.execute(
+                    """
+                    SELECT memory_key
+                    FROM memories
+                    WHERE id = ?
+                    """,
+                    (
+                        memory_id,
+                    ),
+                ).fetchone()
+
+                effective_key = (
+                    str(
+                        refreshed[
+                            "memory_key"
+                        ]
+                    )
+                    if (
+                        refreshed is not None
+                        and refreshed[
+                            "memory_key"
+                        ]
+                    )
+                    else None
+                )
+
             else:
                 cursor = connection.execute(
                     """
@@ -628,29 +637,24 @@ class MemoryManager:
                     cursor.lastrowid
                 )
 
-            # --------------------------------------------------
-            # Same memory_key means same conceptual property.
-            #
-            # Example:
-            #
-            # jarvis.desktop_interface = React
-            # jarvis.desktop_interface = Tauri
-            #
-            # Only one should stay active.
-            # --------------------------------------------------
+                effective_key = (
+                    normalized_key
+                )
 
-            if normalized_key:
+            if effective_key:
                 rows = connection.execute(
                     """
                     SELECT id
+
                     FROM memories
+
                     WHERE
                         memory_key = ?
                         AND status = 'active'
                         AND id <> ?
                     """,
                     (
-                        normalized_key,
+                        effective_key,
                         memory_id,
                     ),
                 ).fetchall()
@@ -666,12 +670,6 @@ class MemoryManager:
                 memory_id
             )
 
-            # --------------------------------------------------
-            # Validate every supersede operation locally.
-            #
-            # Never blindly trust LLM-generated IDs.
-            # --------------------------------------------------
-
             for old_memory_id in supersedes:
                 old_row = connection.execute(
                     """
@@ -679,10 +677,13 @@ class MemoryManager:
                         id,
                         memory_key,
                         content
+
                     FROM memories
+
                     WHERE
                         id = ?
                         AND status = 'active'
+
                     LIMIT 1
                     """,
                     (
@@ -694,7 +695,9 @@ class MemoryManager:
                     continue
 
                 old_content = str(
-                    old_row["content"]
+                    old_row[
+                        "content"
+                    ]
                 )
 
                 old_memory_key = (
@@ -721,7 +724,7 @@ class MemoryManager:
                             content
                         ),
                         new_memory_key=(
-                            normalized_key
+                            effective_key
                         ),
                     )
                 )
@@ -778,7 +781,10 @@ class MemoryManager:
         self,
         memory: str,
     ) -> None:
-        memory = memory.strip()
+        memory = (
+            memory
+            .strip()
+        )
 
         if not memory:
             return
@@ -790,9 +796,9 @@ class MemoryManager:
             confidence=1.0,
         )
 
-        # Keep a human-readable Markdown journal
-        # alongside SQLite.
-        today = datetime.now()
+        today = (
+            datetime.now()
+        )
 
         daily_file = (
             self.daily_path
@@ -826,6 +832,7 @@ class MemoryManager:
                 value = int(
                     memory_id
                 )
+
             except (
                 TypeError,
                 ValueError,
@@ -856,11 +863,14 @@ class MemoryManager:
                 f"""
                 UPDATE memories
                 SET
-                    status = 'forgotten',
+                    status =
+                        'forgotten',
 
-                    forgotten_at = ?,
+                    forgotten_at =
+                        ?,
 
-                    updated_at = ?
+                    updated_at =
+                        ?
 
                 WHERE
                     id IN ({placeholders})
@@ -903,11 +913,14 @@ class MemoryManager:
                 """
                 UPDATE memories
                 SET
-                    status = 'forgotten',
+                    status =
+                        'forgotten',
 
-                    forgotten_at = ?,
+                    forgotten_at =
+                        ?,
 
-                    updated_at = ?
+                    updated_at =
+                        ?
 
                 WHERE
                     memory_key = ?
@@ -963,7 +976,8 @@ class MemoryManager:
                     memory_key = ?
                     AND status = 'active'
 
-                ORDER BY updated_at DESC
+                ORDER BY
+                    updated_at DESC
 
                 LIMIT 1
                 """,
@@ -977,31 +991,49 @@ class MemoryManager:
 
         return {
             "id":
-                int(row["id"]),
+                int(
+                    row["id"]
+                ),
 
             "type":
-                str(row["memory_type"]),
+                str(
+                    row["memory_type"]
+                ),
 
             "memory_key":
-                str(row["memory_key"]),
+                str(
+                    row["memory_key"]
+                ),
 
             "content":
-                str(row["content"]),
+                str(
+                    row["content"]
+                ),
 
             "importance":
-                float(row["importance"]),
+                float(
+                    row["importance"]
+                ),
 
             "confidence":
-                float(row["confidence"]),
+                float(
+                    row["confidence"]
+                ),
 
             "status":
-                str(row["status"]),
+                str(
+                    row["status"]
+                ),
 
             "created_at":
-                str(row["created_at"]),
+                str(
+                    row["created_at"]
+                ),
 
             "updated_at":
-                str(row["updated_at"]),
+                str(
+                    row["updated_at"]
+                ),
         }
 
     # ==================================================
@@ -1013,7 +1045,10 @@ class MemoryManager:
         query: str,
         limit: int = 20,
     ) -> list[dict[str, object]]:
-        query = query.strip()
+        query = (
+            query
+            .strip()
+        )
 
         if not query:
             return []
@@ -1024,8 +1059,6 @@ class MemoryManager:
             )
         )
 
-        # If every word was a stop-word,
-        # fall back to ordinary tokens.
         if not query_tokens:
             query_tokens = (
                 self._tokens(
@@ -1047,9 +1080,11 @@ class MemoryManager:
 
                 FROM memories
 
-                WHERE status = 'active'
+                WHERE
+                    status = 'active'
 
-                ORDER BY updated_at DESC
+                ORDER BY
+                    updated_at DESC
 
                 LIMIT 300
                 """
@@ -1067,9 +1102,22 @@ class MemoryManager:
                 row["content"]
             )
 
+            memory_key = (
+                str(
+                    row[
+                        "memory_key"
+                    ]
+                )
+                if row[
+                    "memory_key"
+                ]
+                else None
+            )
+
             memory_tokens = (
-                self._meaningful_tokens(
-                    content
+                self._record_search_tokens(
+                    content,
+                    memory_key,
                 )
             )
 
@@ -1085,18 +1133,12 @@ class MemoryManager:
                 & memory_tokens
             )
 
-            # --------------------------------------------------
-            # Critical safety fix:
-            #
-            # Do not expose completely unrelated memories
-            # to the LLM memory manager.
-            # --------------------------------------------------
-
             if overlap <= 0:
                 continue
 
             score = float(
-                overlap * 3
+                overlap
+                * 3
             )
 
             score += float(
@@ -1132,11 +1174,15 @@ class MemoryManager:
         return [
             {
                 "id":
-                    int(row["id"]),
+                    int(
+                        row["id"]
+                    ),
 
                 "type":
                     str(
-                        row["memory_type"]
+                        row[
+                            "memory_type"
+                        ]
                     ),
 
                 "memory_key":
@@ -1154,17 +1200,23 @@ class MemoryManager:
 
                 "content":
                     str(
-                        row["content"]
+                        row[
+                            "content"
+                        ]
                     ),
 
                 "importance":
                     float(
-                        row["importance"]
+                        row[
+                            "importance"
+                        ]
                     ),
 
                 "confidence":
                     float(
-                        row["confidence"]
+                        row[
+                            "confidence"
+                        ]
                     ),
             }
             for _, row
@@ -1180,7 +1232,10 @@ class MemoryManager:
         query: str,
         limit: int = 6,
     ) -> list[str]:
-        query = query.strip()
+        query = (
+            query
+            .strip()
+        )
 
         if not query:
             return (
@@ -1213,6 +1268,7 @@ class MemoryManager:
                 """
                 SELECT
                     id,
+                    memory_key,
                     content,
                     importance,
                     confidence,
@@ -1220,9 +1276,11 @@ class MemoryManager:
 
                 FROM memories
 
-                WHERE status = 'active'
+                WHERE
+                    status = 'active'
 
-                ORDER BY updated_at DESC
+                ORDER BY
+                    updated_at DESC
 
                 LIMIT 500
                 """
@@ -1247,9 +1305,22 @@ class MemoryManager:
                 )
             )
 
+            memory_key = (
+                str(
+                    row[
+                        "memory_key"
+                    ]
+                )
+                if row[
+                    "memory_key"
+                ]
+                else None
+            )
+
             memory_tokens = (
-                self._meaningful_tokens(
-                    content
+                self._record_search_tokens(
+                    content,
+                    memory_key,
                 )
             )
 
@@ -1276,18 +1347,19 @@ class MemoryManager:
             ):
                 continue
 
-            importance = float(
-                row["importance"]
-            )
-
-            confidence = float(
-                row["confidence"]
-            )
-
             score = (
-                overlap * 3.0
-                + importance
-                + confidence
+                overlap
+                * 3.0
+                + float(
+                    row[
+                        "importance"
+                    ]
+                )
+                + float(
+                    row[
+                        "confidence"
+                    ]
+                )
             )
 
             if exact_phrase:
@@ -1314,7 +1386,9 @@ class MemoryManager:
         )
 
         if selected:
-            now = self._now()
+            now = (
+                self._now()
+            )
 
             with self._connect() as connection:
                 for (
@@ -1329,7 +1403,8 @@ class MemoryManager:
                             access_count =
                                 access_count + 1,
 
-                            last_accessed_at = ?
+                            last_accessed_at =
+                                ?
 
                         WHERE id = ?
                         """,
@@ -1352,6 +1427,235 @@ class MemoryManager:
         ]
 
     # ==================================================
+    # SEARCH ACTIVE MEMORY RECORDS
+    # ==================================================
+
+    def search_records(
+        self,
+        query: str,
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        query = (
+            query
+            .strip()
+        )
+
+        if not query:
+            return (
+                self.get_all_memories(
+                    include_inactive=False,
+                    limit=limit,
+                )
+            )
+
+        query_tokens = (
+            self._meaningful_tokens(
+                query
+            )
+        )
+
+        if not query_tokens:
+            query_tokens = (
+                self._tokens(
+                    query
+                )
+            )
+
+        normalized_query = (
+            self._normalize(
+                query
+            )
+        )
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    memory_type,
+                    memory_key,
+                    content,
+                    importance,
+                    confidence,
+                    status,
+                    created_at,
+                    updated_at
+
+                FROM memories
+
+                WHERE
+                    status = 'active'
+
+                ORDER BY
+                    updated_at DESC
+
+                LIMIT 500
+                """
+            ).fetchall()
+
+        scored: list[
+            tuple[
+                float,
+                sqlite3.Row,
+            ]
+        ] = []
+
+        for row in rows:
+            content = str(
+                row["content"]
+            )
+
+            content_normalized = (
+                self._normalize(
+                    content
+                )
+            )
+
+            memory_key = (
+                str(
+                    row[
+                        "memory_key"
+                    ]
+                )
+                if row[
+                    "memory_key"
+                ]
+                else None
+            )
+
+            memory_tokens = (
+                self._record_search_tokens(
+                    content,
+                    memory_key,
+                )
+            )
+
+            if not memory_tokens:
+                memory_tokens = (
+                    self._tokens(
+                        content
+                    )
+                )
+
+            overlap = len(
+                query_tokens
+                & memory_tokens
+            )
+
+            exact_phrase = (
+                normalized_query
+                in content_normalized
+            )
+
+            if (
+                overlap <= 0
+                and not exact_phrase
+            ):
+                continue
+
+            score = float(
+                overlap
+                * 3
+            )
+
+            score += float(
+                row["importance"]
+            )
+
+            score += float(
+                row["confidence"]
+            )
+
+            if exact_phrase:
+                score += 4.0
+
+            scored.append(
+                (
+                    score,
+                    row,
+                )
+            )
+
+        scored.sort(
+            key=lambda item:
+                item[0],
+            reverse=True,
+        )
+
+        return [
+            {
+                "id":
+                    int(
+                        row["id"]
+                    ),
+
+                "type":
+                    str(
+                        row[
+                            "memory_type"
+                        ]
+                    ),
+
+                "memory_key":
+                    (
+                        str(
+                            row[
+                                "memory_key"
+                            ]
+                        )
+                        if row[
+                            "memory_key"
+                        ]
+                        else None
+                    ),
+
+                "content":
+                    str(
+                        row[
+                            "content"
+                        ]
+                    ),
+
+                "importance":
+                    float(
+                        row[
+                            "importance"
+                        ]
+                    ),
+
+                "confidence":
+                    float(
+                        row[
+                            "confidence"
+                        ]
+                    ),
+
+                "status":
+                    str(
+                        row[
+                            "status"
+                        ]
+                    ),
+
+                "created_at":
+                    str(
+                        row[
+                            "created_at"
+                        ]
+                    ),
+
+                "updated_at":
+                    str(
+                        row[
+                            "updated_at"
+                        ]
+                    ),
+            }
+            for _, row
+            in scored[:limit]
+        ]
+
+    # ==================================================
     # RECENT ACTIVE MEMORIES
     # ==================================================
 
@@ -1362,13 +1666,16 @@ class MemoryManager:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT content
+                SELECT
+                    content
 
                 FROM memories
 
-                WHERE status = 'active'
+                WHERE
+                    status = 'active'
 
-                ORDER BY updated_at DESC
+                ORDER BY
+                    updated_at DESC
 
                 LIMIT ?
                 """,
@@ -1379,7 +1686,9 @@ class MemoryManager:
 
         return [
             str(
-                row["content"]
+                row[
+                    "content"
+                ]
             )
             for row in rows
         ]
@@ -1393,6 +1702,13 @@ class MemoryManager:
         include_inactive: bool = False,
         limit: int = 100,
     ) -> list[dict[str, object]]:
+        safe_limit = max(
+            1,
+            int(
+                limit
+            ),
+        )
+
         with self._connect() as connection:
             if include_inactive:
                 rows = connection.execute(
@@ -1411,12 +1727,13 @@ class MemoryManager:
 
                     FROM memories
 
-                    ORDER BY id DESC
+                    ORDER BY
+                        id DESC
 
                     LIMIT ?
                     """,
                     (
-                        limit,
+                        safe_limit,
                     ),
                 ).fetchall()
 
@@ -1437,25 +1754,33 @@ class MemoryManager:
 
                     FROM memories
 
-                    WHERE status = 'active'
+                    WHERE
+                        status = 'active'
 
-                    ORDER BY id DESC
+                    ORDER BY
+                        id DESC
 
                     LIMIT ?
                     """,
                     (
-                        limit,
+                        safe_limit,
                     ),
                 ).fetchall()
 
         return [
             {
                 "id":
-                    int(row["id"]),
+                    int(
+                        row[
+                            "id"
+                        ]
+                    ),
 
                 "type":
                     str(
-                        row["memory_type"]
+                        row[
+                            "memory_type"
+                        ]
                     ),
 
                 "memory_key":
@@ -1473,22 +1798,30 @@ class MemoryManager:
 
                 "content":
                     str(
-                        row["content"]
+                        row[
+                            "content"
+                        ]
                     ),
 
                 "status":
                     str(
-                        row["status"]
+                        row[
+                            "status"
+                        ]
                     ),
 
                 "importance":
                     float(
-                        row["importance"]
+                        row[
+                            "importance"
+                        ]
                     ),
 
                 "confidence":
                     float(
-                        row["confidence"]
+                        row[
+                            "confidence"
+                        ]
                     ),
 
                 "superseded_by":
@@ -1507,12 +1840,16 @@ class MemoryManager:
 
                 "created_at":
                     str(
-                        row["created_at"]
+                        row[
+                            "created_at"
+                        ]
                     ),
 
                 "updated_at":
                     str(
-                        row["updated_at"]
+                        row[
+                            "updated_at"
+                        ]
                     ),
             }
             for row in rows
