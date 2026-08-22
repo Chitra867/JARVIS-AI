@@ -6,6 +6,10 @@ from app.core.intent_classifier import (
     intent_classifier,
 )
 
+from app.core.task_context import (
+    task_context_analyzer,
+)
+
 from app.core.task_planner import (
     TaskPlan,
     task_planner,
@@ -110,11 +114,57 @@ class TaskValidator:
         self,
         plan: TaskPlan,
     ) -> ValidatedPlan:
+        contextual_plan = (
+            task_context_analyzer
+            .analyze(
+                plan
+            )
+        )
+
         validated_steps: list[
             ValidatedStep
         ] = []
 
-        for step in plan.steps:
+        for step in contextual_plan.steps:
+            # ==========================================
+            # CONTEXT-DEPENDENT STEP
+            # ==========================================
+
+            if step.references:
+                unresolved = any(
+                    not reference.is_resolved
+                    for reference
+                    in step.references
+                )
+
+                if unresolved:
+                    reason = (
+                        "Context reference has no "
+                        "earlier source step."
+                    )
+
+                else:
+                    reason = (
+                        "Context-dependent step "
+                        "requires runtime reference "
+                        "resolution."
+                    )
+
+                validated_steps.append(
+                    ValidatedStep(
+                        index=step.index,
+                        command=step.command,
+                        step_type=(
+                            StepType.BLOCKED
+                        ),
+                        handler=None,
+                        allowed=False,
+                        reason=reason,
+                    )
+                )
+
+                continue
+
             validated_steps.append(
                 self._validate_step(
                     index=step.index,
@@ -125,30 +175,12 @@ class TaskValidator:
         # ==================================================
         # BLOCK AI INSIDE MULTI-STEP EXECUTION
         # ==================================================
-        #
-        # AISkill normally runs through Jarvis.execute(),
-        # which handles conversation persistence and
-        # memory extraction.
-        #
-        # Directly executing AISkill from TaskExecutor
-        # would bypass that lifecycle.
-        #
-        # Single AI command:
-        #
-        # explain dependency injection
-        #
-        # -> allowed
-        #
-        # Mixed command:
-        #
-        # open chrome then explain dependency injection
-        #
-        # -> blocked for now.
 
         if (
             len(validated_steps) > 1
             and any(
-                step.step_type == StepType.AI
+                step.step_type
+                == StepType.AI
                 for step in validated_steps
             )
         ):
@@ -219,7 +251,9 @@ class TaskValidator:
                 ),
                 handler=None,
                 allowed=False,
-                reason="Empty task step.",
+                reason=(
+                    "Empty task step."
+                ),
             )
 
         skill = (
@@ -261,7 +295,9 @@ class TaskValidator:
                     type(skill).__name__
                 ),
                 allowed=True,
-                reason=result.reason,
+                reason=(
+                    result.reason
+                ),
             )
 
         # ==================================================

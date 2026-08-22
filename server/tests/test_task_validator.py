@@ -196,6 +196,96 @@ class TaskValidatorTests(
         )
 
     # ==================================================
+    # CONTEXT-DEPENDENT REFERENCE
+    # ==================================================
+
+    def test_context_reference_blocks_execution(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                (
+                    "search google for FastAPI "
+                    "then open the first result"
+                )
+            )
+        )
+
+        self.assertTrue(
+            result.is_multi_step
+        )
+
+        self.assertFalse(
+            result.is_safe_to_execute
+        )
+
+        self.assertEqual(
+            result.steps[0].step_type,
+            StepType.SKILL,
+        )
+
+        self.assertEqual(
+            result.steps[0].handler,
+            "SearchSkill",
+        )
+
+        self.assertTrue(
+            result.steps[0].allowed
+        )
+
+        self.assertEqual(
+            result.steps[1].step_type,
+            StepType.BLOCKED,
+        )
+
+        self.assertFalse(
+            result.steps[1].allowed
+        )
+
+        self.assertIn(
+            "runtime reference resolution",
+            result.steps[1].reason,
+        )
+
+    # ==================================================
+    # ORPHAN CONTEXT REFERENCE
+    # ==================================================
+
+    def test_orphan_context_reference_is_blocked(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                "open the first result"
+            )
+        )
+
+        self.assertFalse(
+            result.is_safe_to_execute
+        )
+
+        self.assertEqual(
+            len(result.steps),
+            1,
+        )
+
+        self.assertEqual(
+            result.steps[0].step_type,
+            StepType.BLOCKED,
+        )
+
+        self.assertFalse(
+            result.steps[0].allowed
+        )
+
+        self.assertIn(
+            "no earlier source step",
+            result.steps[0].reason,
+        )
+
+    # ==================================================
     # EMPTY PLAN
     # ==================================================
 
