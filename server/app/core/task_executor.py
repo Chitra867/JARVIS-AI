@@ -1,6 +1,12 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from app.core.task_runtime import (
+    RuntimeOutputType,
+    StepRuntimeOutput,
+    TaskRuntimeContext,
+)
+
 from app.core.task_validator import (
     ValidatedPlan,
     task_validator,
@@ -39,10 +45,16 @@ class TaskExecutionResult:
     success: bool
     blocked: bool
     stopped_at: int | None
+
     steps: tuple[
         StepExecutionResult,
         ...
     ]
+
+    runtime_outputs: tuple[
+        StepRuntimeOutput,
+        ...
+    ] = ()
 
 
 class TaskExecutor:
@@ -83,9 +95,13 @@ class TaskExecutor:
         self,
         plan: ValidatedPlan,
     ) -> TaskExecutionResult:
-        # ----------------------------------------------
-        # NEVER partially execute an unsafe plan.
-        # ----------------------------------------------
+        runtime_context = (
+            TaskRuntimeContext()
+        )
+
+        # ==================================================
+        # NEVER PARTIALLY EXECUTE AN UNSAFE PLAN
+        # ==================================================
 
         if not plan.is_safe_to_execute:
             return TaskExecutionResult(
@@ -96,11 +112,16 @@ class TaskExecutor:
                 blocked=True,
                 stopped_at=None,
                 steps=(),
+                runtime_outputs=(),
             )
 
         executed_steps: list[
             StepExecutionResult
         ] = []
+
+        # ==================================================
+        # EXECUTE STEPS IN ORDER
+        # ==================================================
 
         for step in plan.steps:
             skill = (
@@ -110,10 +131,9 @@ class TaskExecutor:
                 )
             )
 
-            # ------------------------------------------
-            # Handler disappeared after validation.
-            # Fail closed.
-            # ------------------------------------------
+            # ==================================================
+            # HANDLER DISAPPEARED AFTER VALIDATION
+            # ==================================================
 
             if skill is None:
                 executed_steps.append(
@@ -141,12 +161,17 @@ class TaskExecutor:
                     steps=tuple(
                         executed_steps
                     ),
+                    runtime_outputs=(
+                        self._runtime_outputs(
+                            runtime_context,
+                            plan,
+                        )
+                    ),
                 )
 
-            # ------------------------------------------
-            # Guard skills must never execute inside
-            # an already validated task plan.
-            # ------------------------------------------
+            # ==================================================
+            # GUARD SKILL MUST NEVER EXECUTE
+            # ==================================================
 
             if isinstance(
                 skill,
@@ -179,12 +204,17 @@ class TaskExecutor:
                     steps=tuple(
                         executed_steps
                     ),
+                    runtime_outputs=(
+                        self._runtime_outputs(
+                            runtime_context,
+                            plan,
+                        )
+                    ),
                 )
 
-            # ------------------------------------------
-            # Ensure the handler still matches what
-            # validation approved.
-            # ------------------------------------------
+            # ==================================================
+            # VERIFY HANDLER DID NOT CHANGE
+            # ==================================================
 
             actual_handler = (
                 type(skill).__name__
@@ -222,11 +252,17 @@ class TaskExecutor:
                     steps=tuple(
                         executed_steps
                     ),
+                    runtime_outputs=(
+                        self._runtime_outputs(
+                            runtime_context,
+                            plan,
+                        )
+                    ),
                 )
 
-            # ------------------------------------------
+            # ==================================================
             # EXECUTE STEP
-            # ------------------------------------------
+            # ==================================================
 
             try:
                 response = (
@@ -263,15 +299,24 @@ class TaskExecutor:
                     steps=tuple(
                         executed_steps
                     ),
+                    runtime_outputs=(
+                        self._runtime_outputs(
+                            runtime_context,
+                            plan,
+                        )
+                    ),
                 )
 
-            clean_response = str(
-                response
-            ).strip()
+            clean_response = (
+                str(
+                    response
+                )
+                .strip()
+            )
 
-            # ------------------------------------------
+            # ==================================================
             # FAIL FAST
-            # ------------------------------------------
+            # ==================================================
 
             if self._response_indicates_failure(
                 clean_response
@@ -302,7 +347,41 @@ class TaskExecutor:
                     steps=tuple(
                         executed_steps
                     ),
+                    runtime_outputs=(
+                        self._runtime_outputs(
+                            runtime_context,
+                            plan,
+                        )
+                    ),
                 )
+
+            # ==================================================
+            # RECORD STRUCTURED RUNTIME OUTPUT
+            # ==================================================
+            #
+            # For now all ordinary successful skills publish
+            # TEXT output.
+            #
+            # Later SearchSkill can publish SEARCH_RESULTS,
+            # and an actual page-opening skill can publish PAGE.
+            #
+            # We deliberately do NOT pretend that opening a
+            # Google search page means structured search results
+            # have already been extracted.
+
+            runtime_context.record(
+                StepRuntimeOutput(
+                    step_index=step.index,
+                    output_type=(
+                        RuntimeOutputType.TEXT
+                    ),
+                    text=clean_response,
+                )
+            )
+
+            # ==================================================
+            # RECORD SUCCESS
+            # ==================================================
 
             executed_steps.append(
                 StepExecutionResult(
@@ -320,6 +399,10 @@ class TaskExecutor:
                 )
             )
 
+        # ==================================================
+        # COMPLETE SUCCESS
+        # ==================================================
+
         return TaskExecutionResult(
             original_command=(
                 plan.original_command
@@ -329,6 +412,12 @@ class TaskExecutor:
             stopped_at=None,
             steps=tuple(
                 executed_steps
+            ),
+            runtime_outputs=(
+                self._runtime_outputs(
+                    runtime_context,
+                    plan,
+                )
             ),
         )
 
@@ -351,6 +440,39 @@ class TaskExecutor:
 
         return normalized.startswith(
             self.FAILURE_PREFIXES
+        )
+
+    # ==================================================
+    # RUNTIME OUTPUT SNAPSHOT
+    # ==================================================
+
+    def _runtime_outputs(
+        self,
+        runtime_context: TaskRuntimeContext,
+        plan: ValidatedPlan,
+    ) -> tuple[
+        StepRuntimeOutput,
+        ...
+    ]:
+        outputs: list[
+            StepRuntimeOutput
+        ] = []
+
+        for step in plan.steps:
+            output = (
+                runtime_context
+                .get(
+                    step.index
+                )
+            )
+
+            if output is not None:
+                outputs.append(
+                    output
+                )
+
+        return tuple(
+            outputs
         )
 
 

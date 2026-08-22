@@ -22,6 +22,10 @@ class TaskExecutorTests(
     def setUp(self) -> None:
         self.executor = TaskExecutor()
 
+    # ==================================================
+    # HELPER
+    # ==================================================
+
     def _step(
         self,
         index: int,
@@ -89,6 +93,11 @@ class TaskExecutorTests(
 
         self.assertEqual(
             result.steps,
+            (),
+        )
+
+        self.assertEqual(
+            result.runtime_outputs,
             (),
         )
 
@@ -178,6 +187,16 @@ class TaskExecutorTests(
             ExecutionStatus.SUCCESS,
         )
 
+        first_skill.execute\
+            .assert_called_once_with(
+                "open chrome"
+            )
+
+        second_skill.execute\
+            .assert_called_once_with(
+                "search Python"
+            )
+
     # ==================================================
     # FAIL FAST ON FAILED RESPONSE
     # ==================================================
@@ -255,6 +274,10 @@ class TaskExecutorTests(
             result.success
         )
 
+        self.assertFalse(
+            result.blocked
+        )
+
         self.assertEqual(
             result.stopped_at,
             2,
@@ -263,6 +286,11 @@ class TaskExecutorTests(
         self.assertEqual(
             len(result.steps),
             2,
+        )
+
+        self.assertEqual(
+            result.steps[1].status,
+            ExecutionStatus.FAILED,
         )
 
         third_skill.execute\
@@ -323,7 +351,207 @@ class TaskExecutorTests(
         )
 
         self.assertEqual(
+            len(result.steps),
+            1,
+        )
+
+        self.assertEqual(
             result.steps[0].status,
+            ExecutionStatus.FAILED,
+        )
+
+        self.assertEqual(
+            result.runtime_outputs,
+            (),
+        )
+
+    # ==================================================
+    # SUCCESSFUL STEPS PUBLISH RUNTIME OUTPUT
+    # ==================================================
+
+    @patch(
+        "app.core.task_executor.skill_registry"
+    )
+    def test_successful_steps_publish_runtime_outputs(
+        self,
+        mock_registry,
+    ) -> None:
+        first_skill = MagicMock()
+        second_skill = MagicMock()
+
+        first_skill.__class__.__name__ = (
+            "FirstSkill"
+        )
+
+        second_skill.__class__.__name__ = (
+            "SecondSkill"
+        )
+
+        first_skill.execute.return_value = (
+            "First completed."
+        )
+
+        second_skill.execute.return_value = (
+            "Second completed."
+        )
+
+        mock_registry.find_skill.side_effect = [
+            first_skill,
+            second_skill,
+        ]
+
+        plan = ValidatedPlan(
+            original_command="test",
+            steps=(
+                self._step(
+                    1,
+                    "step one",
+                    "FirstSkill",
+                ),
+                self._step(
+                    2,
+                    "step two",
+                    "SecondSkill",
+                ),
+            ),
+        )
+
+        result = (
+            self.executor
+            .execute_plan(
+                plan
+            )
+        )
+
+        self.assertTrue(
+            result.success
+        )
+
+        self.assertEqual(
+            len(result.runtime_outputs),
+            2,
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[0].step_index,
+            1,
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[0].output_type.value,
+            "text",
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[0].text,
+            "First completed.",
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[1].step_index,
+            2,
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[1].output_type.value,
+            "text",
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[1].text,
+            "Second completed.",
+        )
+
+    # ==================================================
+    # FAILED STEP MUST NOT PUBLISH RUNTIME OUTPUT
+    # ==================================================
+
+    @patch(
+        "app.core.task_executor.skill_registry"
+    )
+    def test_failed_step_does_not_publish_runtime_output(
+        self,
+        mock_registry,
+    ) -> None:
+        first_skill = MagicMock()
+        second_skill = MagicMock()
+
+        first_skill.__class__.__name__ = (
+            "FirstSkill"
+        )
+
+        second_skill.__class__.__name__ = (
+            "SecondSkill"
+        )
+
+        first_skill.execute.return_value = (
+            "First completed."
+        )
+
+        second_skill.execute.return_value = (
+            "I couldn't complete the second step."
+        )
+
+        mock_registry.find_skill.side_effect = [
+            first_skill,
+            second_skill,
+        ]
+
+        plan = ValidatedPlan(
+            original_command="test",
+            steps=(
+                self._step(
+                    1,
+                    "step one",
+                    "FirstSkill",
+                ),
+                self._step(
+                    2,
+                    "step two",
+                    "SecondSkill",
+                ),
+            ),
+        )
+
+        result = (
+            self.executor
+            .execute_plan(
+                plan
+            )
+        )
+
+        self.assertFalse(
+            result.success
+        )
+
+        self.assertFalse(
+            result.blocked
+        )
+
+        self.assertEqual(
+            result.stopped_at,
+            2,
+        )
+
+        # Only the first successful step gets
+        # published to runtime context.
+        self.assertEqual(
+            len(result.runtime_outputs),
+            1,
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[0].step_index,
+            1,
+        )
+
+        self.assertEqual(
+            result.runtime_outputs[0].text,
+            "First completed.",
+        )
+
+        self.assertEqual(
+            result.steps[1].status,
             ExecutionStatus.FAILED,
         )
 
@@ -341,6 +569,13 @@ class TaskExecutorTests(
             )
         )
 
+        self.assertTrue(
+            self.executor
+            ._response_indicates_failure(
+                "   "
+            )
+        )
+
     # ==================================================
     # NORMAL RESPONSE IS SUCCESS
     # ==================================================
@@ -352,6 +587,13 @@ class TaskExecutorTests(
             self.executor
             ._response_indicates_failure(
                 "Opened Chrome."
+            )
+        )
+
+        self.assertFalse(
+            self.executor
+            ._response_indicates_failure(
+                "Searching Google for Python."
             )
         )
 
