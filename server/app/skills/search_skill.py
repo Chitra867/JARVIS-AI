@@ -5,6 +5,10 @@ from app.skills.base import Skill
 
 
 class SearchSkill(Skill):
+    # ==================================================
+    # ROUTING
+    # ==================================================
+
     def can_handle(
         self,
         command: str,
@@ -42,10 +46,46 @@ class SearchSkill(Skill):
             )
         )
 
+    # ==================================================
+    # EXECUTE
+    # ==================================================
+
     def execute(
         self,
         command: str,
     ) -> str:
+        provider, query = (
+            self.parse_search(
+                command
+            )
+        )
+
+        if not query:
+            return (
+                "Tell me what you want "
+                "me to search for."
+            )
+
+        if provider == "youtube":
+            return self._youtube(
+                query
+            )
+
+        return self._google(
+            query
+        )
+
+    # ==================================================
+    # PARSE SEARCH
+    # ==================================================
+
+    def parse_search(
+        self,
+        command: str,
+    ) -> tuple[
+        str,
+        str,
+    ]:
         original = (
             command
             .strip()
@@ -56,98 +96,67 @@ class SearchSkill(Skill):
             .lower()
         )
 
-        if lowered.startswith(
-            "search google for "
-        ):
-            query = original[
-                len("search google for "):
-            ].strip()
+        patterns = (
+            (
+                "search youtube for ",
+                "youtube",
+            ),
+            (
+                "youtube search ",
+                "youtube",
+            ),
+            (
+                "search google for ",
+                "google",
+            ),
+            (
+                "search the web for ",
+                "google",
+            ),
+            (
+                "search web for ",
+                "google",
+            ),
+            (
+                "search for ",
+                "google",
+            ),
+            (
+                "google ",
+                "google",
+            ),
+            (
+                "search ",
+                "google",
+            ),
+        )
 
-            return self._google(
-                query
-            )
+        for prefix, provider in patterns:
+            if lowered.startswith(
+                prefix
+            ):
+                query = (
+                    original[
+                        len(prefix):
+                    ]
+                    .strip()
+                    .rstrip(".!?")
+                    .strip()
+                )
 
-        if lowered.startswith(
-            "google "
-        ):
-            query = original[
-                len("google "):
-            ].strip()
-
-            return self._google(
-                query
-            )
-
-        if lowered.startswith(
-            "search youtube for "
-        ):
-            query = original[
-                len("search youtube for "):
-            ].strip()
-
-            return self._youtube(
-                query
-            )
-
-        if lowered.startswith(
-            "youtube search "
-        ):
-            query = original[
-                len("youtube search "):
-            ].strip()
-
-            return self._youtube(
-                query
-            )
-
-        if lowered.startswith(
-            "search the web for "
-        ):
-            query = original[
-                len("search the web for "):
-            ].strip()
-
-            return self._google(
-                query
-            )
-
-        if lowered.startswith(
-            "search web for "
-        ):
-            query = original[
-                len("search web for "):
-            ].strip()
-
-            return self._google(
-                query
-            )
-
-        if lowered.startswith(
-            "search for "
-        ):
-            query = original[
-                len("search for "):
-            ].strip()
-
-            return self._google(
-                query
-            )
-
-        if lowered.startswith(
-            "search "
-        ):
-            query = original[
-                len("search "):
-            ].strip()
-
-            return self._google(
-                query
-            )
+                return (
+                    provider,
+                    query,
+                )
 
         return (
-            "Tell me what you want "
-            "me to search for."
+            "google",
+            "",
         )
+
+    # ==================================================
+    # GOOGLE
+    # ==================================================
 
     def _google(
         self,
@@ -155,6 +164,8 @@ class SearchSkill(Skill):
     ) -> str:
         query = (
             query
+            .strip()
+            .rstrip(".!?")
             .strip()
         )
 
@@ -165,7 +176,8 @@ class SearchSkill(Skill):
             )
 
         encoded = (
-            urllib.parse.quote_plus(
+            urllib.parse
+            .quote_plus(
                 query
             )
         )
@@ -176,7 +188,8 @@ class SearchSkill(Skill):
         )
 
         opened = (
-            webbrowser.open(
+            webbrowser
+            .open(
                 url
             )
         )
@@ -188,8 +201,13 @@ class SearchSkill(Skill):
             )
 
         return (
-            f"Searching Google for {query}."
+            f"Searching Google for "
+            f"{query}."
         )
+
+    # ==================================================
+    # YOUTUBE
+    # ==================================================
 
     def _youtube(
         self,
@@ -198,16 +216,19 @@ class SearchSkill(Skill):
         query = (
             query
             .strip()
+            .rstrip(".!?")
+            .strip()
         )
 
         if not query:
             return (
-                "Tell me what you want me "
-                "to search for on YouTube."
+                "Tell me what you want "
+                "me to search for on YouTube."
             )
 
         encoded = (
-            urllib.parse.quote_plus(
+            urllib.parse
+            .quote_plus(
                 query
             )
         )
@@ -218,7 +239,8 @@ class SearchSkill(Skill):
         )
 
         opened = (
-            webbrowser.open(
+            webbrowser
+            .open(
                 url
             )
         )
@@ -230,5 +252,6 @@ class SearchSkill(Skill):
             )
 
         return (
-            f"Searching YouTube for {query}."
+            f"Searching YouTube for "
+            f"{query}."
         )
