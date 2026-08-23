@@ -1,5 +1,9 @@
 import re
 
+from app.core.conversation import (
+    conversation_manager,
+)
+
 from app.core.page_reader import (
     PageReadError,
     page_reader,
@@ -14,6 +18,7 @@ from app.core.task_runtime import (
     ReferenceResolution,
     RuntimeOutputType,
     StepRuntimeOutput,
+    page_context_store,
 )
 
 from app.skills.ai_skill import (
@@ -100,10 +105,16 @@ class PageSummarySkill(
             PageResource | None
         ) = None
 
+        # --------------------------------------------------
+        # RESOLVE PAGE
+        # --------------------------------------------------
+
         for resolution in (
             resolutions
         ):
-            if not resolution.resolved:
+            if not (
+                resolution.resolved
+            ):
                 continue
 
             if (
@@ -134,8 +145,10 @@ class PageSummarySkill(
                 None,
             )
 
-        # Existing page output may already contain
-        # readable text in future versions.
+        # --------------------------------------------------
+        # READ PAGE CONTENT
+        # --------------------------------------------------
+
         readable_page = (
             page
         )
@@ -184,6 +197,30 @@ class PageSummarySkill(
                 None,
             )
 
+        # --------------------------------------------------
+        # IMPORTANT:
+        # Replace URL-only cached page with the fully
+        # downloaded readable page.
+        # --------------------------------------------------
+
+        conversation_id = (
+            conversation_manager
+            .get_active_conversation_id()
+        )
+
+        page_context_store.record(
+            page=(
+                readable_page
+            ),
+            conversation_id=(
+                conversation_id
+            ),
+        )
+
+        # --------------------------------------------------
+        # SUMMARIZE
+        # --------------------------------------------------
+
         summary = (
             self._ai
             .summarize_page(
@@ -193,7 +230,9 @@ class PageSummarySkill(
                 url=(
                     readable_page.url
                 ),
-                content=content,
+                content=(
+                    content
+                ),
             )
             .strip()
         )
@@ -215,7 +254,9 @@ class PageSummarySkill(
                 output_type=(
                     RuntimeOutputType.TEXT
                 ),
-                text=summary,
+                text=(
+                    summary
+                ),
             )
         )
 

@@ -6,11 +6,16 @@ from enum import (
     Enum,
 )
 
+from app.core.conversation import (
+    conversation_manager,
+)
+
 from app.core.task_runtime import (
     ReferenceResolution,
     RuntimeOutputType,
     StepRuntimeOutput,
     TaskRuntimeContext,
+    page_context_store,
     task_reference_resolver,
 )
 
@@ -137,7 +142,9 @@ class TaskExecutor:
         # NEVER PARTIALLY EXECUTE AN UNSAFE PLAN
         # =================================================
 
-        if not plan.is_safe_to_execute:
+        if not (
+            plan.is_safe_to_execute
+        ):
             return TaskExecutionResult(
                 original_command=(
                     plan.original_command
@@ -157,7 +164,9 @@ class TaskExecutor:
         # EXECUTE IN ORDER
         # =================================================
 
-        for step in plan.steps:
+        for step in (
+            plan.steps
+        ):
             skill = (
                 skill_registry
                 .find_skill(
@@ -172,8 +181,12 @@ class TaskExecutor:
             if skill is None:
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=None,
                         status=(
                             ExecutionStatus
@@ -186,18 +199,20 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=False,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=False,
+                    )
                 )
 
             # =================================================
@@ -210,8 +225,12 @@ class TaskExecutor:
             ):
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=(
                             type(
                                 skill
@@ -229,18 +248,20 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=True,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=True,
+                    )
                 )
 
             # =================================================
@@ -254,14 +275,19 @@ class TaskExecutor:
             )
 
             if (
-                step.handler is not None
+                step.handler
+                is not None
                 and actual_handler
                 != step.handler
             ):
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=(
                             actual_handler
                         ),
@@ -276,18 +302,20 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=False,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=False,
+                    )
                 )
 
             # =================================================
@@ -303,11 +331,18 @@ class TaskExecutor:
                 )
             )
 
-            if resolutions is None:
+            if (
+                resolutions
+                is None
+            ):
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=(
                             actual_handler
                         ),
@@ -323,18 +358,20 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=True,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=True,
+                    )
                 )
 
             # =================================================
@@ -345,19 +382,25 @@ class TaskExecutor:
                 (
                     response,
                     explicit_runtime_output,
-                ) = self._execute_step(
-                    skill=skill,
-                    step=step,
-                    resolutions=(
-                        resolutions
-                    ),
+                ) = (
+                    self._execute_step(
+                        skill=skill,
+                        step=step,
+                        resolutions=(
+                            resolutions
+                        ),
+                    )
                 )
 
             except Exception as error:
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=(
                             actual_handler
                         ),
@@ -372,18 +415,20 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=False,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=False,
+                    )
                 )
 
             clean_response = (
@@ -405,8 +450,12 @@ class TaskExecutor:
             ):
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=(
                             actual_handler
                         ),
@@ -420,18 +469,20 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=False,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=False,
+                    )
                 )
 
             # =================================================
@@ -442,7 +493,10 @@ class TaskExecutor:
                 explicit_runtime_output
             )
 
-            if runtime_output is None:
+            if (
+                runtime_output
+                is None
+            ):
                 runtime_output = (
                     self._build_runtime_output(
                         skill=skill,
@@ -467,8 +521,12 @@ class TaskExecutor:
             ):
                 executed_steps.append(
                     StepExecutionResult(
-                        index=step.index,
-                        command=step.command,
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
                         handler=(
                             actual_handler
                         ),
@@ -483,23 +541,60 @@ class TaskExecutor:
                     )
                 )
 
-                return self._failure_result(
-                    plan=plan,
-                    executed_steps=(
-                        executed_steps
-                    ),
-                    runtime_context=(
-                        runtime_context
-                    ),
-                    stopped_at=(
-                        step.index
-                    ),
-                    blocked=False,
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=False,
+                    )
                 )
+
+            # =================================================
+            # RECORD PER-TASK RUNTIME OUTPUT
+            # =================================================
 
             runtime_context.record(
                 runtime_output
             )
+
+            # =================================================
+            # REMEMBER ACTIVE WEBPAGE
+            # =================================================
+            #
+            # PAGE output must survive beyond this single
+            # TaskRuntimeContext so a later command can say:
+            #
+            # "What are its advantages?"
+            #
+            # and AISkill can use the previously opened page.
+            # =================================================
+
+            if (
+                runtime_output
+                .output_type
+                == RuntimeOutputType.PAGE
+                and runtime_output.page
+                is not None
+                and runtime_output.page.url
+                .strip()
+            ):
+                page_context_store.record(
+                    page=(
+                        runtime_output.page
+                    ),
+                    conversation_id=(
+                        conversation_manager
+                        .get_active_conversation_id()
+                    ),
+                )
 
             # =================================================
             # SUCCESS
@@ -507,8 +602,12 @@ class TaskExecutor:
 
             executed_steps.append(
                 StepExecutionResult(
-                    index=step.index,
-                    command=step.command,
+                    index=(
+                        step.index
+                    ),
+                    command=(
+                        step.command
+                    ),
                     handler=(
                         actual_handler
                     ),
@@ -560,7 +659,9 @@ class TaskExecutor:
         ]
         | None
     ):
-        if not step.references:
+        if not (
+            step.references
+        ):
             return ()
 
         resolutions: list[
@@ -578,7 +679,9 @@ class TaskExecutor:
                 )
             )
 
-            if not resolution.resolved:
+            if not (
+                resolution.resolved
+            ):
                 return None
 
             resolutions.append(
@@ -655,16 +758,21 @@ class TaskExecutor:
 
             response = (
                 str(
-                    result[0]
+                    result[
+                        0
+                    ]
                 )
             )
 
             runtime_output = (
-                result[1]
+                result[
+                    1
+                ]
             )
 
             if (
-                runtime_output is not None
+                runtime_output
+                is not None
                 and not isinstance(
                     runtime_output,
                     StepRuntimeOutput,
@@ -765,11 +873,15 @@ class TaskExecutor:
                 )
 
         return StepRuntimeOutput(
-            step_index=step_index,
+            step_index=(
+                step_index
+            ),
             output_type=(
                 RuntimeOutputType.TEXT
             ),
-            text=response,
+            text=(
+                response
+            ),
         )
 
     # =====================================================
@@ -792,8 +904,12 @@ class TaskExecutor:
                 plan.original_command
             ),
             success=False,
-            blocked=blocked,
-            stopped_at=stopped_at,
+            blocked=(
+                blocked
+            ),
+            stopped_at=(
+                stopped_at
+            ),
             steps=tuple(
                 executed_steps
             ),
@@ -822,8 +938,11 @@ class TaskExecutor:
         if not normalized:
             return True
 
-        return normalized.startswith(
-            self.FAILURE_PREFIXES
+        return (
+            normalized
+            .startswith(
+                self.FAILURE_PREFIXES
+            )
         )
 
     # =====================================================
@@ -854,7 +973,8 @@ class TaskExecutor:
             )
 
             if (
-                output is not None
+                output
+                is not None
             ):
                 outputs.append(
                     output

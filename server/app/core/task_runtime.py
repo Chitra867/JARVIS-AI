@@ -1,5 +1,14 @@
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import (
+    dataclass,
+)
+
+from enum import (
+    Enum,
+)
+
+from threading import (
+    RLock,
+)
 
 from app.core.task_context import (
     ReferenceType,
@@ -7,43 +16,87 @@ from app.core.task_context import (
 )
 
 
-class RuntimeOutputType(str, Enum):
+# =========================================================
+# RUNTIME OUTPUT TYPES
+# =========================================================
+
+
+class RuntimeOutputType(
+    str,
+    Enum,
+):
     TEXT = "text"
     SEARCH_RESULTS = "search_results"
     PAGE = "page"
 
 
-@dataclass(frozen=True)
+# =========================================================
+# SEARCH RESULT
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class SearchResult:
     title: str
     url: str
 
 
-@dataclass(frozen=True)
+# =========================================================
+# PAGE RESOURCE
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class PageResource:
     url: str
     title: str | None = None
     content: str | None = None
 
 
-@dataclass(frozen=True)
+# =========================================================
+# STEP RUNTIME OUTPUT
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class StepRuntimeOutput:
     step_index: int
     output_type: RuntimeOutputType
+
     text: str = ""
+
     search_results: tuple[
         SearchResult,
         ...
     ] = ()
+
     page: PageResource | None = None
 
 
-@dataclass(frozen=True)
+# =========================================================
+# REFERENCE RESOLUTION
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class ReferenceResolution:
     reference: TaskReference
     resolved: bool
     value: object | None
     reason: str
+
+
+# =========================================================
+# PER-TASK RUNTIME CONTEXT
+# =========================================================
 
 
 class TaskRuntimeContext:
@@ -55,9 +108,9 @@ class TaskRuntimeContext:
             StepRuntimeOutput,
         ] = {}
 
-    # ==================================================
-    # RECORD OUTPUT
-    # ==================================================
+    # =====================================================
+    # RECORD
+    # =====================================================
 
     def record(
         self,
@@ -67,21 +120,24 @@ class TaskRuntimeContext:
             output.step_index
         ] = output
 
-    # ==================================================
-    # READ OUTPUT
-    # ==================================================
+    # =====================================================
+    # GET
+    # =====================================================
 
     def get(
         self,
         step_index: int,
     ) -> StepRuntimeOutput | None:
-        return self._outputs.get(
-            step_index
+        return (
+            self._outputs
+            .get(
+                step_index
+            )
         )
 
-    # ==================================================
+    # =====================================================
     # CLEAR
-    # ==================================================
+    # =====================================================
 
     def clear(
         self,
@@ -89,20 +145,141 @@ class TaskRuntimeContext:
         self._outputs.clear()
 
 
+# =========================================================
+# PERSISTENT ACTIVE PAGE CONTEXT
+# =========================================================
+
+
+class PageContextStore:
+    LOCAL_CONTEXT_KEY = (
+        "__local__"
+    )
+
+    def __init__(
+        self,
+    ) -> None:
+        self._pages: dict[
+            str,
+            PageResource,
+        ] = {}
+
+        self._lock = (
+            RLock()
+        )
+
+    # =====================================================
+    # RECORD PAGE
+    # =====================================================
+
+    def record(
+        self,
+        page: PageResource,
+        conversation_id: object | None = None,
+    ) -> None:
+        if not (
+            page.url
+            .strip()
+        ):
+            return
+
+        key = (
+            self._context_key(
+                conversation_id
+            )
+        )
+
+        with self._lock:
+            self._pages[
+                key
+            ] = page
+
+    # =====================================================
+    # GET PAGE
+    # =====================================================
+
+    def get(
+        self,
+        conversation_id: object | None = None,
+    ) -> PageResource | None:
+        key = (
+            self._context_key(
+                conversation_id
+            )
+        )
+
+        with self._lock:
+            return (
+                self._pages
+                .get(
+                    key
+                )
+            )
+
+    # =====================================================
+    # CLEAR PAGE
+    # =====================================================
+
+    def clear(
+        self,
+        conversation_id: object | None = None,
+    ) -> None:
+        key = (
+            self._context_key(
+                conversation_id
+            )
+        )
+
+        with self._lock:
+            self._pages.pop(
+                key,
+                None,
+            )
+
+    # =====================================================
+    # CONTEXT KEY
+    # =====================================================
+
+    def _context_key(
+        self,
+        conversation_id: object | None,
+    ) -> str:
+        if (
+            conversation_id
+            is None
+        ):
+            return (
+                self.LOCAL_CONTEXT_KEY
+            )
+
+        return (
+            f"conversation:"
+            f"{conversation_id}"
+        )
+
+
+page_context_store = (
+    PageContextStore()
+)
+
+
+# =========================================================
+# TASK REFERENCE RESOLVER
+# =========================================================
+
+
 class TaskReferenceResolver:
-    # ==================================================
+    # =====================================================
     # RESOLVE
-    # ==================================================
+    # =====================================================
 
     def resolve(
         self,
         reference: TaskReference,
         runtime_context: TaskRuntimeContext,
     ) -> ReferenceResolution:
-        # ----------------------------------------------
-        # Dependency analyzer could not identify
-        # a source step.
-        # ----------------------------------------------
+        # -------------------------------------------------
+        # NO SOURCE STEP
+        # -------------------------------------------------
 
         if (
             reference.source_step_index
@@ -113,60 +290,78 @@ class TaskReferenceResolver:
                 resolved=False,
                 value=None,
                 reason=(
-                    "Reference has no source step."
+                    "Reference has no "
+                    "source step."
                 ),
             )
 
         source_output = (
             runtime_context
             .get(
-                reference.source_step_index
+                reference
+                .source_step_index
             )
         )
 
-        # ----------------------------------------------
-        # Source step has not executed / produced output.
-        # ----------------------------------------------
+        # -------------------------------------------------
+        # SOURCE STEP HAS NO OUTPUT
+        # -------------------------------------------------
 
-        if source_output is None:
+        if (
+            source_output
+            is None
+        ):
             return ReferenceResolution(
                 reference=reference,
                 resolved=False,
                 value=None,
                 reason=(
-                    "Source step has no runtime output."
+                    "Source step has no "
+                    "runtime output."
                 ),
             )
 
-        # ----------------------------------------------
+        # -------------------------------------------------
         # FIRST SEARCH RESULT
-        # ----------------------------------------------
+        # -------------------------------------------------
 
         if (
             reference.reference_type
-            == ReferenceType.FIRST_SEARCH_RESULT
+            == ReferenceType
+            .FIRST_SEARCH_RESULT
         ):
             return (
-                self._resolve_first_search_result(
-                    reference,
-                    source_output,
+                self
+                ._resolve_first_search_result(
+                    reference=reference,
+                    source_output=(
+                        source_output
+                    ),
                 )
             )
 
-        # ----------------------------------------------
+        # -------------------------------------------------
         # PREVIOUS PAGE
-        # ----------------------------------------------
+        # -------------------------------------------------
 
         if (
             reference.reference_type
-            == ReferenceType.PREVIOUS_PAGE
+            == ReferenceType
+            .PREVIOUS_PAGE
         ):
             return (
-                self._resolve_previous_page(
-                    reference,
-                    source_output,
+                self
+                ._resolve_previous_page(
+                    reference=reference,
+                    source_output=(
+                        source_output
+                    ),
                 )
             )
+
+        # -------------------------------------------------
+        # UNKNOWN REFERENCE TYPE
+        # -------------------------------------------------
 
         return ReferenceResolution(
             reference=reference,
@@ -177,9 +372,9 @@ class TaskReferenceResolver:
             ),
         )
 
-    # ==================================================
+    # =====================================================
     # FIRST SEARCH RESULT
-    # ==================================================
+    # =====================================================
 
     def _resolve_first_search_result(
         self,
@@ -188,25 +383,30 @@ class TaskReferenceResolver:
     ) -> ReferenceResolution:
         if (
             source_output.output_type
-            != RuntimeOutputType.SEARCH_RESULTS
+            != RuntimeOutputType
+            .SEARCH_RESULTS
         ):
             return ReferenceResolution(
                 reference=reference,
                 resolved=False,
                 value=None,
                 reason=(
-                    "Source step did not produce "
-                    "search results."
+                    "Source step did not "
+                    "produce search results."
                 ),
             )
 
-        if not source_output.search_results:
+        if not (
+            source_output
+            .search_results
+        ):
             return ReferenceResolution(
                 reference=reference,
                 resolved=False,
                 value=None,
                 reason=(
-                    "Search produced no results."
+                    "Search produced "
+                    "no results."
                 ),
             )
 
@@ -215,13 +415,17 @@ class TaskReferenceResolver:
             .search_results[0]
         )
 
-        if not first_result.url.strip():
+        if not (
+            first_result.url
+            .strip()
+        ):
             return ReferenceResolution(
                 reference=reference,
                 resolved=False,
                 value=None,
                 reason=(
-                    "First search result has no URL."
+                    "First search result "
+                    "has no URL."
                 ),
             )
 
@@ -235,9 +439,9 @@ class TaskReferenceResolver:
             ),
         )
 
-    # ==================================================
+    # =====================================================
     # PREVIOUS PAGE
-    # ==================================================
+    # =====================================================
 
     def _resolve_previous_page(
         self,
@@ -253,8 +457,8 @@ class TaskReferenceResolver:
                 resolved=False,
                 value=None,
                 reason=(
-                    "Source step did not produce "
-                    "a page resource."
+                    "Source step did not "
+                    "produce a page resource."
                 ),
             )
 
@@ -271,7 +475,8 @@ class TaskReferenceResolver:
                 resolved=False,
                 value=None,
                 reason=(
-                    "Source step has no usable page."
+                    "Source step has "
+                    "no usable page."
                 ),
             )
 
@@ -280,8 +485,8 @@ class TaskReferenceResolver:
             resolved=True,
             value=page,
             reason=(
-                "Resolved from the previously "
-                "opened page."
+                "Resolved from the "
+                "previously opened page."
             ),
         )
 
