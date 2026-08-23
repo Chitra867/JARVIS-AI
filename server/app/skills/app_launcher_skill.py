@@ -2,22 +2,48 @@ import os
 import shutil
 import subprocess
 import webbrowser
-from pathlib import Path
 
-from app.skills.base import Skill
+from pathlib import (
+    Path,
+)
+
+import psutil
+
+from app.skills.base import (
+    Skill,
+)
 
 
-class AppLauncherSkill(Skill):
+class AppLauncherSkill(
+    Skill
+):
     WEBSITES = {
-        "youtube": "https://www.youtube.com",
-        "google": "https://www.google.com",
-        "github": "https://github.com",
-        "gmail": "https://mail.google.com",
-        "chatgpt": "https://chatgpt.com",
-        "facebook": "https://www.facebook.com",
-        "instagram": "https://www.instagram.com",
-        "linkedin": "https://www.linkedin.com",
-        "reddit": "https://www.reddit.com",
+        "youtube":
+            "https://www.youtube.com",
+
+        "google":
+            "https://www.google.com",
+
+        "github":
+            "https://github.com",
+
+        "gmail":
+            "https://mail.google.com",
+
+        "chatgpt":
+            "https://chatgpt.com",
+
+        "facebook":
+            "https://www.facebook.com",
+
+        "instagram":
+            "https://www.instagram.com",
+
+        "linkedin":
+            "https://www.linkedin.com",
+
+        "reddit":
+            "https://www.reddit.com",
     }
 
     APP_ALIASES = {
@@ -82,6 +108,77 @@ class AppLauncherSkill(Skill):
         ],
     }
 
+    # Exact executable names that may be terminated.
+    CLOSE_ALIASES = {
+        "notepad": {
+            "notepad.exe",
+        },
+
+        "calculator": {
+            "calculatorapp.exe",
+            "calc.exe",
+        },
+
+        "calc": {
+            "calculatorapp.exe",
+            "calc.exe",
+        },
+
+        "vs code": {
+            "code.exe",
+        },
+
+        "vscode": {
+            "code.exe",
+        },
+
+        "visual studio code": {
+            "code.exe",
+        },
+
+        "chrome": {
+            "chrome.exe",
+        },
+
+        "powershell": {
+            "powershell.exe",
+            "pwsh.exe",
+        },
+
+        "terminal": {
+            "windowsterminal.exe",
+            "wt.exe",
+        },
+
+        "command prompt": {
+            "cmd.exe",
+        },
+
+        "cmd": {
+            "cmd.exe",
+        },
+
+        "spotify": {
+            "spotify.exe",
+        },
+    }
+
+    OPEN_PREFIXES = (
+        "open ",
+        "launch ",
+        "start ",
+    )
+
+    CLOSE_PREFIXES = (
+        "close ",
+        "quit ",
+        "exit ",
+    )
+
+    # ==================================================
+    # ROUTING
+    # ==================================================
+
     def can_handle(
         self,
         command: str,
@@ -94,128 +191,413 @@ class AppLauncherSkill(Skill):
 
         return normalized.startswith(
             (
-                "open ",
-                "launch ",
-                "start ",
+                *self.OPEN_PREFIXES,
+                *self.CLOSE_PREFIXES,
             )
         )
+
+    # ==================================================
+    # EXECUTE
+    # ==================================================
 
     def execute(
         self,
         command: str,
     ) -> str:
-        normalized = (
+        clean_command = (
             command
             .strip()
+        )
+
+        normalized = (
+            clean_command
             .lower()
         )
 
-        target = normalized
-
-        for prefix in (
-            "open ",
-            "launch ",
-            "start ",
+        if normalized.startswith(
+            self.CLOSE_PREFIXES
         ):
-            if target.startswith(prefix):
-                target = target[
-                    len(prefix):
-                ].strip()
-
-                break
-
-        if not target:
-            return "Tell me what you want me to open."
-
-        # ---------------------------------------------
-        # Websites
-        # ---------------------------------------------
-
-        if target in self.WEBSITES:
-            url = self.WEBSITES[
-                target
-            ]
-
-            webbrowser.open(url)
-
-            return (
-                f"Opening {target}."
+            target = (
+                self._extract_target(
+                    clean_command,
+                    self.CLOSE_PREFIXES,
+                )
             )
 
-        # ---------------------------------------------
-        # Common Windows folders
-        # ---------------------------------------------
+            return (
+                self._close_app(
+                    target
+                )
+            )
 
-        folder = self._get_folder(
-            target
+        target = (
+            self._extract_target(
+                clean_command,
+                self.OPEN_PREFIXES,
+            )
         )
 
-        if folder is not None:
+        if not target:
+            return (
+                "Tell me what you want "
+                "me to open."
+            )
+
+        normalized_target = (
+            target
+            .lower()
+        )
+
+        # ==============================================
+        # WEBSITE
+        # ==============================================
+
+        if (
+            normalized_target
+            in self.WEBSITES
+        ):
+            url = (
+                self.WEBSITES[
+                    normalized_target
+                ]
+            )
+
+            webbrowser.open(
+                url
+            )
+
+            return (
+                f"Opening "
+                f"{normalized_target}."
+            )
+
+        # ==============================================
+        # EXPLICIT FILE / FOLDER PATH
+        # ==============================================
+
+        path = (
+            self._resolve_existing_path(
+                target
+            )
+        )
+
+        if (
+            path
+            is not None
+        ):
             try:
                 os.startfile(
-                    str(folder)
+                    str(
+                        path
+                    )
                 )
 
                 return (
-                    f"Opening {target}."
+                    f"Opening "
+                    f"{path.name or path}."
                 )
 
             except OSError:
                 return (
-                    f"I couldn't open {target}."
+                    "I couldn't open "
+                    "that path."
                 )
 
-        # ---------------------------------------------
-        # Desktop applications
-        # ---------------------------------------------
+        # ==============================================
+        # COMMON WINDOWS FOLDER
+        # ==============================================
 
-        executable = self._resolve_app(
-            target
+        folder = (
+            self._get_folder(
+                normalized_target
+            )
+        )
+
+        if (
+            folder
+            is not None
+        ):
+            try:
+                os.startfile(
+                    str(
+                        folder
+                    )
+                )
+
+                return (
+                    f"Opening "
+                    f"{normalized_target}."
+                )
+
+            except OSError:
+                return (
+                    f"I couldn't open "
+                    f"{normalized_target}."
+                )
+
+        # ==============================================
+        # APPLICATION
+        # ==============================================
+
+        executable = (
+            self._resolve_app(
+                normalized_target
+            )
         )
 
         if executable:
             try:
                 subprocess.Popen(
-                    [executable],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    [
+                        executable
+                    ],
+                    stdout=(
+                        subprocess.DEVNULL
+                    ),
+                    stderr=(
+                        subprocess.DEVNULL
+                    ),
                 )
 
                 return (
-                    f"Opening {target}."
+                    f"Opening "
+                    f"{normalized_target}."
                 )
 
             except OSError:
                 return (
-                    f"I couldn't open {target}."
+                    f"I couldn't open "
+                    f"{normalized_target}."
                 )
 
         return (
-            f"I don't know how to open {target} yet."
+            f"I don't know how to open "
+            f"{target} yet."
         )
+
+    # ==================================================
+    # EXTRACT TARGET
+    # ==================================================
+
+    def _extract_target(
+        self,
+        command: str,
+        prefixes: tuple[
+            str,
+            ...
+        ],
+    ) -> str:
+        lowered = (
+            command
+            .lower()
+        )
+
+        for prefix in (
+            prefixes
+        ):
+            if lowered.startswith(
+                prefix
+            ):
+                return (
+                    command[
+                        len(prefix):
+                    ]
+                    .strip()
+                    .strip(
+                        "\"'"
+                    )
+                )
+
+        return ""
+
+    # ==================================================
+    # CLOSE APP
+    # ==================================================
+
+    def _close_app(
+        self,
+        target: str,
+    ) -> str:
+        normalized_target = (
+            target
+            .strip()
+            .lower()
+            .rstrip(
+                ".!?"
+            )
+        )
+
+        if not normalized_target:
+            return (
+                "Tell me which application "
+                "you want me to close."
+            )
+
+        allowed_names = (
+            self.CLOSE_ALIASES
+            .get(
+                normalized_target
+            )
+        )
+
+        if not allowed_names:
+            return (
+                f"I don't know how to safely "
+                f"close {target} yet."
+            )
+
+        matched = 0
+
+        for process in (
+            psutil.process_iter(
+                [
+                    "name",
+                ]
+            )
+        ):
+            try:
+                process_name = (
+                    process.info[
+                        "name"
+                    ]
+                    or ""
+                ).lower()
+
+                if (
+                    process_name
+                    not in allowed_names
+                ):
+                    continue
+
+                process.terminate()
+
+                matched += 1
+
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied,
+                psutil.ZombieProcess,
+            ):
+                continue
+
+        if (
+            matched
+            == 0
+        ):
+            return (
+                f"I don't see "
+                f"{target} running."
+            )
+
+        return (
+            f"Closing {target}."
+        )
+
+    # ==================================================
+    # EXISTING PATH
+    # ==================================================
+
+    def _resolve_existing_path(
+        self,
+        target: str,
+    ) -> Path | None:
+        candidate = (
+            target
+            .strip()
+            .strip(
+                "\"'"
+            )
+        )
+
+        if not candidate:
+            return None
+
+        # Avoid interpreting normal app names such as
+        # "chrome" as arbitrary paths.
+        looks_like_path = (
+            "\\" in candidate
+            or "/" in candidate
+            or candidate.startswith(
+                "."
+            )
+            or (
+                len(candidate)
+                >= 2
+                and candidate[1]
+                == ":"
+            )
+        )
+
+        if not looks_like_path:
+            return None
+
+        try:
+            path = (
+                Path(
+                    candidate
+                )
+                .expanduser()
+            )
+
+            if (
+                not path.is_absolute()
+            ):
+                path = (
+                    Path.cwd()
+                    / path
+                )
+
+            path = (
+                path.resolve(
+                    strict=False
+                )
+            )
+
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+        ):
+            return None
+
+        if (
+            path.exists()
+        ):
+            return path
+
+        return None
+
+    # ==================================================
+    # RESOLVE APPLICATION
+    # ==================================================
 
     def _resolve_app(
         self,
         app_name: str,
     ) -> str | None:
         candidates = (
-            self.APP_ALIASES.get(
+            self.APP_ALIASES
+            .get(
                 app_name
             )
         )
 
         if candidates:
-            for candidate in candidates:
-                found = shutil.which(
-                    candidate
+            for candidate in (
+                candidates
+            ):
+                found = (
+                    shutil.which(
+                        candidate
+                    )
                 )
 
                 if found:
                     return found
 
-        # ---------------------------------------------
-        # VS Code fallback paths
-        # ---------------------------------------------
+        # ==============================================
+        # VS CODE FALLBACK
+        # ==============================================
 
         if app_name in {
             "vs code",
@@ -223,77 +605,95 @@ class AppLauncherSkill(Skill):
             "visual studio code",
         }:
             paths = [
-                Path(
-                    os.getenv(
-                        "LOCALAPPDATA",
-                        "",
+                (
+                    Path(
+                        os.getenv(
+                            "LOCALAPPDATA",
+                            "",
+                        )
                     )
-                )
-                / "Programs"
-                / "Microsoft VS Code"
-                / "Code.exe",
+                    / "Programs"
+                    / "Microsoft VS Code"
+                    / "Code.exe"
+                ),
 
-                Path(
-                    os.getenv(
-                        "ProgramFiles",
-                        "",
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles",
+                            "",
+                        )
                     )
-                )
-                / "Microsoft VS Code"
-                / "Code.exe",
+                    / "Microsoft VS Code"
+                    / "Code.exe"
+                ),
             ]
 
             for path in paths:
-                if path.exists():
-                    return str(path)
+                if (
+                    path.exists()
+                ):
+                    return str(
+                        path
+                    )
 
-        # ---------------------------------------------
-        # Chrome fallback paths
-        # ---------------------------------------------
+        # ==============================================
+        # CHROME FALLBACK
+        # ==============================================
 
         if app_name == "chrome":
             paths = [
-                Path(
-                    os.getenv(
-                        "ProgramFiles",
-                        "",
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles",
+                            "",
+                        )
                     )
-                )
-                / "Google"
-                / "Chrome"
-                / "Application"
-                / "chrome.exe",
+                    / "Google"
+                    / "Chrome"
+                    / "Application"
+                    / "chrome.exe"
+                ),
 
-                Path(
-                    os.getenv(
-                        "ProgramFiles(x86)",
-                        "",
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles(x86)",
+                            "",
+                        )
                     )
-                )
-                / "Google"
-                / "Chrome"
-                / "Application"
-                / "chrome.exe",
+                    / "Google"
+                    / "Chrome"
+                    / "Application"
+                    / "chrome.exe"
+                ),
 
-                Path(
-                    os.getenv(
-                        "LOCALAPPDATA",
-                        "",
+                (
+                    Path(
+                        os.getenv(
+                            "LOCALAPPDATA",
+                            "",
+                        )
                     )
-                )
-                / "Google"
-                / "Chrome"
-                / "Application"
-                / "chrome.exe",
+                    / "Google"
+                    / "Chrome"
+                    / "Application"
+                    / "chrome.exe"
+                ),
             ]
 
             for path in paths:
-                if path.exists():
-                    return str(path)
+                if (
+                    path.exists()
+                ):
+                    return str(
+                        path
+                    )
 
-        # ---------------------------------------------
-        # Spotify fallback
-        # ---------------------------------------------
+        # ==============================================
+        # SPOTIFY FALLBACK
+        # ==============================================
 
         if app_name == "spotify":
             path = (
@@ -307,44 +707,63 @@ class AppLauncherSkill(Skill):
                 / "Spotify.exe"
             )
 
-            if path.exists():
-                return str(path)
+            if (
+                path.exists()
+            ):
+                return str(
+                    path
+                )
 
         return None
+
+    # ==================================================
+    # COMMON FOLDER
+    # ==================================================
 
     def _get_folder(
         self,
         target: str,
     ) -> Path | None:
-        home = Path.home()
+        home = (
+            Path.home()
+        )
 
         folders = {
             "downloads":
-                home / "Downloads",
+                home
+                / "Downloads",
 
             "download folder":
-                home / "Downloads",
+                home
+                / "Downloads",
 
             "documents":
-                home / "Documents",
+                home
+                / "Documents",
 
             "documents folder":
-                home / "Documents",
+                home
+                / "Documents",
 
             "desktop":
-                home / "Desktop",
+                home
+                / "Desktop",
 
             "desktop folder":
-                home / "Desktop",
+                home
+                / "Desktop",
 
             "pictures":
-                home / "Pictures",
+                home
+                / "Pictures",
 
             "music":
-                home / "Music",
+                home
+                / "Music",
 
             "videos":
-                home / "Videos",
+                home
+                / "Videos",
 
             "home folder":
                 home,
@@ -353,8 +772,11 @@ class AppLauncherSkill(Skill):
                 home,
         }
 
-        folder = folders.get(
-            target
+        folder = (
+            folders
+            .get(
+                target
+            )
         )
 
         if (

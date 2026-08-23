@@ -1,3 +1,7 @@
+from app.skills.action_guard_skill import (
+    ActionGuardSkill,
+)
+
 from app.skills.ai_skill import (
     AISkill,
 )
@@ -14,16 +18,28 @@ from app.skills.file_skill import (
     FileSkill,
 )
 
+from app.skills.media_skill import (
+    MediaSkill,
+)
+
+from app.skills.memory_control_skill import (
+    MemoryControlSkill,
+)
+
 from app.skills.memory_skill import (
     MemorySkill,
 )
 
-from app.skills.search_skill import (
-    SearchSkill,
-)
-
 from app.skills.page_open_skill import (
     PageOpenSkill,
+)
+
+from app.skills.page_summary_skill import (
+    PageSummarySkill,
+)
+
+from app.skills.search_skill import (
+    SearchSkill,
 )
 
 from app.skills.system_skill import (
@@ -38,21 +54,6 @@ from app.skills.windows_control_skill import (
     WindowsControlSkill,
 )
 
-from app.skills.media_skill import (
-    MediaSkill,
-)
-
-from app.skills.action_guard_skill import (
-    ActionGuardSkill,
-)
-
-from app.skills.memory_control_skill import (
-    MemoryControlSkill,
-)
-
-from app.skills.page_summary_skill import (
-    PageSummarySkill,
-)
 
 class SkillRegistry:
     def __init__(
@@ -67,22 +68,10 @@ class SkillRegistry:
 
             SearchSkill(),
 
-            # Must be before AppLauncherSkill and
-            # ActionGuardSkill so:
-            #
-            # open the first result
-            # open https://example.com
-            #
-            # are handled deterministically.
-            PageOpenSkill(),
-
-            SearchSkill(),
-
+            # Must stay before AppLauncherSkill.
             PageOpenSkill(),
 
             PageSummarySkill(),
-
-            FileSkill(),
 
             FileSkill(),
 
@@ -92,13 +81,11 @@ class SkillRegistry:
 
             AppLauncherSkill(),
 
-            # Explicit deterministic memory
-            # commands come before MemorySkill.
             MemoryControlSkill(),
 
             MemorySkill(),
 
-            # Unsupported computer actions.
+            # Unsupported actions must never reach AI.
             ActionGuardSkill(),
 
             # AI fallback always stays last.
@@ -109,9 +96,13 @@ class SkillRegistry:
         self,
         command: str,
     ) -> Skill | None:
-        for skill in self.skills:
-            if skill.can_handle(
-                command
+        for skill in (
+            self.skills
+        ):
+            if (
+                skill.can_handle(
+                    command
+                )
             ):
                 return skill
 
