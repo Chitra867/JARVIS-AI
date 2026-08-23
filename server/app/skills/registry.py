@@ -42,6 +42,10 @@ from app.skills.power_control_skill import (
     PowerControlSkill,
 )
 
+from app.skills.screenshot_skill import (
+    ScreenshotSkill,
+)
+
 from app.skills.search_skill import (
     SearchSkill,
 )
@@ -82,9 +86,9 @@ class SkillRegistry:
 
             MediaSkill(),
 
-            # Must appear before AppLauncherSkill and
-            # ActionGuardSkill.
             PowerControlSkill(),
+
+            ScreenshotSkill(),
 
             AppLauncherSkill(),
 
@@ -92,8 +96,10 @@ class SkillRegistry:
 
             MemorySkill(),
 
+            # Unsupported actions stop here.
             ActionGuardSkill(),
 
+            # AI fallback always stays last.
             AISkill(),
         ]
 
