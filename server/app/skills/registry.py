@@ -38,6 +38,10 @@ from app.skills.page_summary_skill import (
     PageSummarySkill,
 )
 
+from app.skills.power_control_skill import (
+    PowerControlSkill,
+)
+
 from app.skills.search_skill import (
     SearchSkill,
 )
@@ -68,7 +72,6 @@ class SkillRegistry:
 
             SearchSkill(),
 
-            # Must stay before AppLauncherSkill.
             PageOpenSkill(),
 
             PageSummarySkill(),
@@ -79,16 +82,18 @@ class SkillRegistry:
 
             MediaSkill(),
 
+            # Must appear before AppLauncherSkill and
+            # ActionGuardSkill.
+            PowerControlSkill(),
+
             AppLauncherSkill(),
 
             MemoryControlSkill(),
 
             MemorySkill(),
 
-            # Unsupported actions must never reach AI.
             ActionGuardSkill(),
 
-            # AI fallback always stays last.
             AISkill(),
         ]
 
