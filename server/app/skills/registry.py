@@ -50,6 +50,9 @@ from app.skills.memory_control_skill import (
     MemoryControlSkill,
 )
 
+from app.skills.page_summary_skill import (
+    PageSummarySkill,
+)
 
 class SkillRegistry:
     def __init__(
@@ -72,6 +75,14 @@ class SkillRegistry:
             #
             # are handled deterministically.
             PageOpenSkill(),
+
+            SearchSkill(),
+
+            PageOpenSkill(),
+
+            PageSummarySkill(),
+
+            FileSkill(),
 
             FileSkill(),
 
