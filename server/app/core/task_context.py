@@ -1,13 +1,27 @@
 import re
-from dataclasses import dataclass
-from enum import Enum
+
+from dataclasses import (
+    dataclass,
+)
+
+from enum import (
+    Enum,
+)
 
 from app.core.task_planner import (
     TaskPlan,
 )
 
 
-class ReferenceType(str, Enum):
+# =========================================================
+# REFERENCE TYPES
+# =========================================================
+
+
+class ReferenceType(
+    str,
+    Enum,
+):
     FIRST_SEARCH_RESULT = (
         "first_search_result"
     )
@@ -17,7 +31,14 @@ class ReferenceType(str, Enum):
     )
 
 
-@dataclass(frozen=True)
+# =========================================================
+# TASK REFERENCE
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class TaskReference:
     reference_type: ReferenceType
     raw_text: str
@@ -27,16 +48,31 @@ class TaskReference:
     def is_resolved(
         self,
     ) -> bool:
+        """
+        This means the dependency source step is known.
+
+        It does NOT mean the runtime value itself has
+        already been produced.
+        """
+
         return (
             self.source_step_index
             is not None
         )
 
 
-@dataclass(frozen=True)
+# =========================================================
+# CONTEXTUAL STEP
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class ContextualTaskStep:
     index: int
     command: str
+
     references: tuple[
         TaskReference,
         ...
@@ -51,9 +87,17 @@ class ContextualTaskStep:
         )
 
 
-@dataclass(frozen=True)
+# =========================================================
+# CONTEXTUAL PLAN
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class ContextualTaskPlan:
     original_command: str
+
     steps: tuple[
         ContextualTaskStep,
         ...
@@ -83,7 +127,18 @@ class ContextualTaskPlan:
         )
 
 
+# =========================================================
+# CONTEXT ANALYZER
+# =========================================================
+
+
 class TaskContextAnalyzer:
+    # -----------------------------------------------------
+    # "the first result"
+    # "first search result"
+    # "top result"
+    # -----------------------------------------------------
+
     FIRST_RESULT_PATTERN = re.compile(
         (
             r"\b"
@@ -95,6 +150,12 @@ class TaskContextAnalyzer:
         ),
         flags=re.IGNORECASE,
     )
+
+    # -----------------------------------------------------
+    # "that page"
+    # "this page"
+    # "the page"
+    # -----------------------------------------------------
 
     PAGE_REFERENCE_PATTERN = re.compile(
         (
@@ -112,9 +173,14 @@ class TaskContextAnalyzer:
         "youtube search ",
     )
 
-    # ==================================================
-    # ANALYZE PLAN
-    # ==================================================
+    DIRECT_PAGE_PREFIXES = (
+        "open http://",
+        "open https://",
+    )
+
+    # =====================================================
+    # ANALYZE
+    # =====================================================
 
     def analyze(
         self,
@@ -148,18 +214,22 @@ class TaskContextAnalyzer:
                 .strip()
             )
 
-            # ==========================================
-            # FIRST SEARCH RESULT
-            # ==========================================
+            # =================================================
+            # FIRST SEARCH RESULT REFERENCE
+            # =================================================
 
             first_result_match = (
-                self.FIRST_RESULT_PATTERN
+                self
+                .FIRST_RESULT_PATTERN
                 .search(
                     command
                 )
             )
 
-            if first_result_match:
+            if (
+                first_result_match
+                is not None
+            ):
                 references.append(
                     TaskReference(
                         reference_type=(
@@ -176,18 +246,22 @@ class TaskContextAnalyzer:
                     )
                 )
 
-            # ==========================================
-            # PAGE REFERENCE
-            # ==========================================
+            # =================================================
+            # PREVIOUS PAGE REFERENCE
+            # =================================================
 
             page_match = (
-                self.PAGE_REFERENCE_PATTERN
+                self
+                .PAGE_REFERENCE_PATTERN
                 .search(
                     command
                 )
             )
 
-            if page_match:
+            if (
+                page_match
+                is not None
+            ):
                 references.append(
                     TaskReference(
                         reference_type=(
@@ -214,9 +288,9 @@ class TaskContextAnalyzer:
                 )
             )
 
-            # ==========================================
+            # =================================================
             # UPDATE SEARCH CONTEXT
-            # ==========================================
+            # =================================================
 
             if normalized.startswith(
                 self.SEARCH_PREFIXES
@@ -225,19 +299,34 @@ class TaskContextAnalyzer:
                     step.index
                 )
 
-            # ==========================================
+            # =================================================
             # UPDATE PAGE CONTEXT
-            # ==========================================
+            # =================================================
+            #
+            # Do NOT treat any random mention of
+            # "first result" as a page.
+            #
+            # It becomes a page source only when the command
+            # actually opens that result.
+            # =================================================
+
+            opens_first_result = (
+                normalized.startswith(
+                    "open "
+                )
+                and first_result_match
+                is not None
+            )
+
+            opens_direct_url = (
+                normalized.startswith(
+                    self.DIRECT_PAGE_PREFIXES
+                )
+            )
 
             if (
-                first_result_match
-                is not None
-                or normalized.startswith(
-                    "open http://"
-                )
-                or normalized.startswith(
-                    "open https://"
-                )
+                opens_first_result
+                or opens_direct_url
             ):
                 last_page_step = (
                     step.index

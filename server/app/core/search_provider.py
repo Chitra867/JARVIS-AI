@@ -1,23 +1,58 @@
-from abc import ABC, abstractmethod
-from urllib.parse import urlparse
+import ipaddress
+
+from abc import (
+    ABC,
+    abstractmethod,
+)
+
+from urllib.parse import (
+    urlparse,
+)
+
+from ddgs import (
+    DDGS,
+)
+
+from ddgs.exceptions import (
+    DDGSException,
+    RatelimitException,
+    TimeoutException,
+)
 
 from app.core.task_runtime import (
     SearchResult,
 )
 
 
+# =========================================================
+# ERRORS
+# =========================================================
+
+
 class SearchProviderError(
     RuntimeError
 ):
+    """
+    Raised when a structured search provider cannot
+    complete a search safely or successfully.
+    """
+
     pass
 
 
-class SearchProvider(ABC):
+# =========================================================
+# BASE PROVIDER
+# =========================================================
+
+
+class SearchProvider(
+    ABC
+):
     """
     Base contract for structured search providers.
 
-    A provider performs a search and returns concrete
-    SearchResult objects instead of only opening a browser.
+    Providers return concrete SearchResult objects
+    instead of only opening a browser.
     """
 
     name: str
@@ -32,6 +67,208 @@ class SearchProvider(ABC):
         ...
     ]:
         raise NotImplementedError
+
+
+# =========================================================
+# DDGS SEARCH PROVIDER
+# =========================================================
+
+
+class DDGSSearchProvider(
+    SearchProvider
+):
+    """
+    Free structured web-search provider using DDGS.
+
+    No API key is required.
+
+    DDGS can query multiple public search backends and
+    returns structured results containing title and URL.
+    """
+
+    name = "ddgs"
+
+    def __init__(
+        self,
+        timeout_seconds: int = 10,
+        region: str = "us-en",
+        safesearch: str = "moderate",
+        backend: str = "auto",
+    ) -> None:
+        self._timeout_seconds = max(
+            1,
+            int(
+                timeout_seconds
+            ),
+        )
+
+        self._region = (
+            region.strip()
+            or "us-en"
+        )
+
+        self._safesearch = (
+            safesearch.strip()
+            or "moderate"
+        )
+
+        self._backend = (
+            backend.strip()
+            or "auto"
+        )
+
+    # =====================================================
+    # SEARCH
+    # =====================================================
+
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+    ) -> tuple[
+        SearchResult,
+        ...
+    ]:
+        clean_query = (
+            query
+            .strip()
+        )
+
+        if not clean_query:
+            return ()
+
+        if limit <= 0:
+            return ()
+
+        # Keep structured searches small and predictable.
+        result_limit = min(
+            max(
+                int(
+                    limit
+                ),
+                1,
+            ),
+            20,
+        )
+
+        try:
+            engine = DDGS(
+                timeout=(
+                    self._timeout_seconds
+                ),
+            )
+
+            raw_results = (
+                engine.text(
+                    query=clean_query,
+                    region=(
+                        self._region
+                    ),
+                    safesearch=(
+                        self._safesearch
+                    ),
+                    max_results=(
+                        result_limit
+                    ),
+                    backend=(
+                        self._backend
+                    ),
+                )
+            )
+
+        except TimeoutException as error:
+            raise SearchProviderError(
+                (
+                    "Structured web search "
+                    "timed out."
+                )
+            ) from error
+
+        except RatelimitException as error:
+            raise SearchProviderError(
+                (
+                    "Structured web search "
+                    "was temporarily rate limited."
+                )
+            ) from error
+
+        except DDGSException as error:
+            raise SearchProviderError(
+                (
+                    "Structured web search "
+                    "failed."
+                )
+            ) from error
+
+        except Exception as error:
+            raise SearchProviderError(
+                (
+                    "Unexpected structured "
+                    "search failure."
+                )
+            ) from error
+
+        if not raw_results:
+            return ()
+
+        results: list[
+            SearchResult
+        ] = []
+
+        for raw_result in (
+            raw_results
+        ):
+            if not isinstance(
+                raw_result,
+                dict,
+            ):
+                continue
+
+            title = str(
+                raw_result.get(
+                    "title",
+                    "",
+                )
+            ).strip()
+
+            # DDGS text results use "href"
+            # for the result URL.
+            url = str(
+                raw_result.get(
+                    "href",
+                    "",
+                )
+            ).strip()
+
+            if not url:
+                continue
+
+            results.append(
+                SearchResult(
+                    title=(
+                        title
+                        or url
+                    ),
+                    url=url,
+                )
+            )
+
+            if (
+                len(
+                    results
+                )
+                >= result_limit
+            ):
+                break
+
+        return tuple(
+            results
+        )
+
+
+# =========================================================
+# PROVIDER REGISTRY
+# =========================================================
 
 
 class SearchProviderRegistry:
@@ -61,7 +298,10 @@ class SearchProviderRegistry:
 
         if not name:
             raise ValueError(
-                "Search provider must have a name."
+                (
+                    "Search provider must "
+                    "have a name."
+                )
             )
 
         self._providers[
@@ -101,8 +341,11 @@ class SearchProviderRegistry:
             .lower()
         )
 
-        return self._providers.get(
-            normalized
+        return (
+            self._providers
+            .get(
+                normalized
+            )
         )
 
     # ==================================================
@@ -127,9 +370,9 @@ class SearchProviderRegistry:
         if provider is None:
             raise SearchProviderError(
                 (
-                    "No structured search provider "
-                    f"is registered for "
-                    f"'{provider_name}'."
+                    "No structured search "
+                    "provider is registered "
+                    f"for '{provider_name}'."
                 )
             )
 
@@ -158,14 +401,16 @@ class SearchProviderRegistry:
         except Exception as error:
             raise SearchProviderError(
                 (
-                    "Structured search provider "
-                    "failed."
+                    "Structured search "
+                    "provider failed."
                 )
             ) from error
 
-        return self._sanitize_results(
-            raw_results,
-            limit=limit,
+        return (
+            self._sanitize_results(
+                raw_results,
+                limit=limit,
+            )
         )
 
     # ==================================================
@@ -191,6 +436,9 @@ class SearchProviderRegistry:
             str
         ] = set()
 
+        if limit <= 0:
+            return ()
+
         for result in results:
             url = (
                 result.url
@@ -202,9 +450,26 @@ class SearchProviderRegistry:
             ):
                 continue
 
-            normalized_url = (
-                url.lower()
-            )
+            # Remove URL fragments so links to the same
+            # page are treated as duplicates.
+            try:
+                parsed = (
+                    urlparse(
+                        url
+                    )
+                )
+
+                normalized_url = (
+                    parsed
+                    ._replace(
+                        fragment="",
+                    )
+                    .geturl()
+                    .lower()
+                )
+
+            except ValueError:
+                continue
 
             if (
                 normalized_url
@@ -232,7 +497,9 @@ class SearchProviderRegistry:
             )
 
             if (
-                len(clean_results)
+                len(
+                    clean_results
+                )
                 >= limit
             ):
                 break
@@ -262,6 +529,7 @@ class SearchProviderRegistry:
         except ValueError:
             return False
 
+        # Only normal web URLs are acceptable.
         if (
             parsed.scheme
             not in {
@@ -271,11 +539,72 @@ class SearchProviderRegistry:
         ):
             return False
 
-        return bool(
-            parsed.netloc
-        )
+        hostname = (
+            parsed.hostname
+            or ""
+        ).strip().lower()
+
+        if not hostname:
+            return False
+
+        # Explicit localhost names.
+        if hostname in {
+            "localhost",
+            "localhost.localdomain",
+        }:
+            return False
+
+        # Local-network mDNS names.
+        if hostname.endswith(
+            ".local"
+        ):
+            return False
+
+        # -------------------------------------------------
+        # BLOCK LITERAL PRIVATE / LOCAL IP ADDRESSES
+        # -------------------------------------------------
+
+        try:
+            address = (
+                ipaddress
+                .ip_address(
+                    hostname
+                )
+            )
+
+        except ValueError:
+            # Normal domain name.
+            address = None
+
+        if address is not None:
+            if (
+                address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_multicast
+                or address.is_reserved
+                or address.is_unspecified
+            ):
+                return False
+
+        return True
+
+
+# =========================================================
+# GLOBAL REGISTRY
+# =========================================================
 
 
 search_provider_registry = (
     SearchProviderRegistry()
+)
+
+
+# =========================================================
+# REGISTER PROVIDERS
+# =========================================================
+
+
+search_provider_registry.register(
+    DDGSSearchProvider()
 )

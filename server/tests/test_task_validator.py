@@ -1,5 +1,9 @@
 import unittest
 
+from app.core.task_context import (
+    ReferenceType,
+)
+
 from app.core.task_validator import (
     StepType,
     TaskValidator,
@@ -9,8 +13,12 @@ from app.core.task_validator import (
 class TaskValidatorTests(
     unittest.TestCase
 ):
-    def setUp(self) -> None:
-        self.validator = TaskValidator()
+    def setUp(
+        self,
+    ) -> None:
+        self.validator = (
+            TaskValidator()
+        )
 
     # ==================================================
     # SUPPORTED MULTI-STEP PLAN
@@ -38,7 +46,9 @@ class TaskValidatorTests(
         )
 
         self.assertEqual(
-            len(result.steps),
+            len(
+                result.steps
+            ),
             2,
         )
 
@@ -50,6 +60,14 @@ class TaskValidatorTests(
         self.assertEqual(
             result.steps[1].handler,
             "SearchSkill",
+        )
+
+        self.assertTrue(
+            result.steps[0].allowed
+        )
+
+        self.assertTrue(
+            result.steps[1].allowed
         )
 
     # ==================================================
@@ -74,12 +92,16 @@ class TaskValidatorTests(
         )
 
         self.assertEqual(
-            len(result.blocked_steps),
+            len(
+                result.blocked_steps
+            ),
             1,
         )
 
         self.assertEqual(
-            result.blocked_steps[0].command,
+            result
+            .blocked_steps[0]
+            .command,
             "turn off wifi",
         )
 
@@ -109,6 +131,10 @@ class TaskValidatorTests(
             StepType.BLOCKED,
         )
 
+        self.assertFalse(
+            result.steps[1].allowed
+        )
+
     # ==================================================
     # SINGLE AI STEP
     # ==================================================
@@ -119,7 +145,10 @@ class TaskValidatorTests(
         result = (
             self.validator
             .validate(
-                "explain dependency injection"
+                (
+                    "explain dependency "
+                    "injection"
+                )
             )
         )
 
@@ -137,6 +166,10 @@ class TaskValidatorTests(
             "AISkill",
         )
 
+        self.assertTrue(
+            result.steps[0].allowed
+        )
+
     # ==================================================
     # AI INSIDE MULTI-STEP PLAN
     # ==================================================
@@ -149,7 +182,8 @@ class TaskValidatorTests(
             .validate(
                 (
                     "open chrome then "
-                    "explain dependency injection"
+                    "explain dependency "
+                    "injection"
                 )
             )
         )
@@ -196,10 +230,10 @@ class TaskValidatorTests(
         )
 
     # ==================================================
-    # CONTEXT-DEPENDENT REFERENCE
+    # RESOLVED CONTEXT REFERENCE
     # ==================================================
 
-    def test_context_reference_blocks_execution(
+    def test_resolved_context_reference_is_allowed(
         self,
     ) -> None:
         result = (
@@ -212,40 +246,135 @@ class TaskValidatorTests(
             )
         )
 
+        # --------------------------------------------------
+        # PLAN
+        # --------------------------------------------------
+
         self.assertTrue(
             result.is_multi_step
         )
 
-        self.assertFalse(
+        self.assertTrue(
             result.is_safe_to_execute
         )
 
         self.assertEqual(
-            result.steps[0].step_type,
+            len(
+                result.steps
+            ),
+            2,
+        )
+
+        # --------------------------------------------------
+        # SEARCH STEP
+        # --------------------------------------------------
+
+        search_step = (
+            result.steps[0]
+        )
+
+        self.assertEqual(
+            search_step.index,
+            1,
+        )
+
+        self.assertEqual(
+            search_step.command,
+            (
+                "search google "
+                "for FastAPI"
+            ),
+        )
+
+        self.assertEqual(
+            search_step.step_type,
             StepType.SKILL,
         )
 
         self.assertEqual(
-            result.steps[0].handler,
+            search_step.handler,
             "SearchSkill",
         )
 
         self.assertTrue(
-            result.steps[0].allowed
+            search_step.allowed
         )
 
         self.assertEqual(
-            result.steps[1].step_type,
-            StepType.BLOCKED,
+            search_step.references,
+            (),
         )
 
-        self.assertFalse(
-            result.steps[1].allowed
+        # --------------------------------------------------
+        # OPEN-FIRST-RESULT STEP
+        # --------------------------------------------------
+
+        open_step = (
+            result.steps[1]
         )
 
-        self.assertIn(
-            "runtime reference resolution",
-            result.steps[1].reason,
+        self.assertEqual(
+            open_step.index,
+            2,
+        )
+
+        self.assertEqual(
+            open_step.command,
+            (
+                "open the first "
+                "result"
+            ),
+        )
+
+        self.assertEqual(
+            open_step.step_type,
+            StepType.SKILL,
+        )
+
+        self.assertEqual(
+            open_step.handler,
+            "PageOpenSkill",
+        )
+
+        self.assertTrue(
+            open_step.allowed
+        )
+
+        # --------------------------------------------------
+        # RUNTIME REFERENCE
+        # --------------------------------------------------
+
+        self.assertEqual(
+            len(
+                open_step.references
+            ),
+            1,
+        )
+
+        reference = (
+            open_step.references[0]
+        )
+
+        self.assertEqual(
+            reference.reference_type,
+            (
+                ReferenceType
+                .FIRST_SEARCH_RESULT
+            ),
+        )
+
+        self.assertEqual(
+            reference.raw_text.lower(),
+            "the first result",
+        )
+
+        self.assertEqual(
+            reference.source_step_index,
+            1,
+        )
+
+        self.assertTrue(
+            reference.is_resolved
         )
 
     # ==================================================
@@ -258,7 +387,10 @@ class TaskValidatorTests(
         result = (
             self.validator
             .validate(
-                "open the first result"
+                (
+                    "open the first "
+                    "result"
+                )
             )
         )
 
@@ -267,22 +399,62 @@ class TaskValidatorTests(
         )
 
         self.assertEqual(
-            len(result.steps),
+            len(
+                result.steps
+            ),
             1,
         )
 
+        step = (
+            result.steps[0]
+        )
+
         self.assertEqual(
-            result.steps[0].step_type,
+            step.step_type,
             StepType.BLOCKED,
         )
 
         self.assertFalse(
-            result.steps[0].allowed
+            step.allowed
+        )
+
+        self.assertIsNone(
+            step.handler
         )
 
         self.assertIn(
             "no earlier source step",
-            result.steps[0].reason,
+            step.reason,
+        )
+
+        # Reference still exists, but there is no
+        # previous search step capable of producing
+        # its runtime value.
+        self.assertEqual(
+            len(
+                step.references
+            ),
+            1,
+        )
+
+        reference = (
+            step.references[0]
+        )
+
+        self.assertEqual(
+            reference.reference_type,
+            (
+                ReferenceType
+                .FIRST_SEARCH_RESULT
+            ),
+        )
+
+        self.assertIsNone(
+            reference.source_step_index
+        )
+
+        self.assertFalse(
+            reference.is_resolved
         )
 
     # ==================================================

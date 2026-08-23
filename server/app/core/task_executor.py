@@ -1,14 +1,22 @@
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import (
+    dataclass,
+)
+
+from enum import (
+    Enum,
+)
 
 from app.core.task_runtime import (
+    ReferenceResolution,
     RuntimeOutputType,
     StepRuntimeOutput,
     TaskRuntimeContext,
+    task_reference_resolver,
 )
 
 from app.core.task_validator import (
     ValidatedPlan,
+    ValidatedStep,
     task_validator,
 )
 
@@ -21,6 +29,11 @@ from app.skills.registry import (
 )
 
 
+# =========================================================
+# EXECUTION STATUS
+# =========================================================
+
+
 class ExecutionStatus(
     str,
     Enum,
@@ -30,7 +43,14 @@ class ExecutionStatus(
     BLOCKED = "blocked"
 
 
-@dataclass(frozen=True)
+# =========================================================
+# STEP RESULT
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class StepExecutionResult:
     index: int
     command: str
@@ -39,7 +59,14 @@ class StepExecutionResult:
     response: str
 
 
-@dataclass(frozen=True)
+# =========================================================
+# TASK RESULT
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class TaskExecutionResult:
     original_command: str
     success: bool
@@ -57,6 +84,11 @@ class TaskExecutionResult:
     ] = ()
 
 
+# =========================================================
+# EXECUTOR
+# =========================================================
+
+
 class TaskExecutor:
     FAILURE_PREFIXES = (
         "i couldn't ",
@@ -68,9 +100,9 @@ class TaskExecutor:
         "unable to ",
     )
 
-    # ==================================================
-    # EXECUTE COMMAND
-    # ==================================================
+    # =====================================================
+    # EXECUTE RAW COMMAND
+    # =====================================================
 
     def execute(
         self,
@@ -83,13 +115,15 @@ class TaskExecutor:
             )
         )
 
-        return self.execute_plan(
-            validated_plan
+        return (
+            self.execute_plan(
+                validated_plan
+            )
         )
 
-    # ==================================================
+    # =====================================================
     # EXECUTE VALIDATED PLAN
-    # ==================================================
+    # =====================================================
 
     def execute_plan(
         self,
@@ -99,9 +133,9 @@ class TaskExecutor:
             TaskRuntimeContext()
         )
 
-        # ==================================================
+        # =================================================
         # NEVER PARTIALLY EXECUTE AN UNSAFE PLAN
-        # ==================================================
+        # =================================================
 
         if not plan.is_safe_to_execute:
             return TaskExecutionResult(
@@ -119,9 +153,9 @@ class TaskExecutor:
             StepExecutionResult
         ] = []
 
-        # ==================================================
-        # EXECUTE STEPS IN ORDER
-        # ==================================================
+        # =================================================
+        # EXECUTE IN ORDER
+        # =================================================
 
         for step in plan.steps:
             skill = (
@@ -131,9 +165,9 @@ class TaskExecutor:
                 )
             )
 
-            # ==================================================
+            # =================================================
             # HANDLER DISAPPEARED AFTER VALIDATION
-            # ==================================================
+            # =================================================
 
             if skill is None:
                 executed_steps.append(
@@ -142,7 +176,8 @@ class TaskExecutor:
                         command=step.command,
                         handler=None,
                         status=(
-                            ExecutionStatus.FAILED
+                            ExecutionStatus
+                            .FAILED
                         ),
                         response=(
                             "No handler is available "
@@ -151,27 +186,23 @@ class TaskExecutor:
                     )
                 )
 
-                return TaskExecutionResult(
-                    original_command=(
-                        plan.original_command
-                    ),
-                    success=False,
-                    blocked=False,
-                    stopped_at=step.index,
-                    steps=tuple(
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
                         executed_steps
                     ),
-                    runtime_outputs=(
-                        self._runtime_outputs(
-                            runtime_context,
-                            plan,
-                        )
+                    runtime_context=(
+                        runtime_context
                     ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=False,
                 )
 
-            # ==================================================
-            # GUARD SKILL MUST NEVER EXECUTE
-            # ==================================================
+            # =================================================
+            # ACTION GUARD MUST NEVER EXECUTE
+            # =================================================
 
             if isinstance(
                 skill,
@@ -182,42 +213,44 @@ class TaskExecutor:
                         index=step.index,
                         command=step.command,
                         handler=(
-                            type(skill).__name__
+                            type(
+                                skill
+                            ).__name__
                         ),
                         status=(
-                            ExecutionStatus.BLOCKED
+                            ExecutionStatus
+                            .BLOCKED
                         ),
                         response=(
                             "Execution blocked because "
-                            "the step has no real action skill."
+                            "the step has no real "
+                            "action skill."
                         ),
                     )
                 )
 
-                return TaskExecutionResult(
-                    original_command=(
-                        plan.original_command
-                    ),
-                    success=False,
-                    blocked=True,
-                    stopped_at=step.index,
-                    steps=tuple(
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
                         executed_steps
                     ),
-                    runtime_outputs=(
-                        self._runtime_outputs(
-                            runtime_context,
-                            plan,
-                        )
+                    runtime_context=(
+                        runtime_context
                     ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=True,
                 )
 
-            # ==================================================
+            # =================================================
             # VERIFY HANDLER DID NOT CHANGE
-            # ==================================================
+            # =================================================
 
             actual_handler = (
-                type(skill).__name__
+                type(
+                    skill
+                ).__name__
             )
 
             if (
@@ -233,7 +266,8 @@ class TaskExecutor:
                             actual_handler
                         ),
                         status=(
-                            ExecutionStatus.FAILED
+                            ExecutionStatus
+                            .FAILED
                         ),
                         response=(
                             "Handler changed after "
@@ -242,33 +276,81 @@ class TaskExecutor:
                     )
                 )
 
-                return TaskExecutionResult(
-                    original_command=(
-                        plan.original_command
-                    ),
-                    success=False,
-                    blocked=False,
-                    stopped_at=step.index,
-                    steps=tuple(
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
                         executed_steps
                     ),
-                    runtime_outputs=(
-                        self._runtime_outputs(
-                            runtime_context,
-                            plan,
-                        )
+                    runtime_context=(
+                        runtime_context
                     ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=False,
                 )
 
-            # ==================================================
+            # =================================================
+            # RESOLVE RUNTIME REFERENCES
+            # =================================================
+
+            resolutions = (
+                self._resolve_references(
+                    step=step,
+                    runtime_context=(
+                        runtime_context
+                    ),
+                )
+            )
+
+            if resolutions is None:
+                executed_steps.append(
+                    StepExecutionResult(
+                        index=step.index,
+                        command=step.command,
+                        handler=(
+                            actual_handler
+                        ),
+                        status=(
+                            ExecutionStatus
+                            .BLOCKED
+                        ),
+                        response=(
+                            "Unable to safely resolve "
+                            "the required runtime "
+                            "reference."
+                        ),
+                    )
+                )
+
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
+                        executed_steps
+                    ),
+                    runtime_context=(
+                        runtime_context
+                    ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=True,
+                )
+
+            # =================================================
             # EXECUTE STEP
-            # ==================================================
+            # =================================================
 
             try:
-                response = (
-                    skill.execute(
-                        step.command
-                    )
+                (
+                    response,
+                    explicit_runtime_output,
+                ) = self._execute_step(
+                    skill=skill,
+                    step=step,
+                    resolutions=(
+                        resolutions
+                    ),
                 )
 
             except Exception as error:
@@ -280,31 +362,28 @@ class TaskExecutor:
                             actual_handler
                         ),
                         status=(
-                            ExecutionStatus.FAILED
+                            ExecutionStatus
+                            .FAILED
                         ),
                         response=(
-                            f"Step failed: "
+                            "Step failed: "
                             f"{type(error).__name__}"
                         ),
                     )
                 )
 
-                return TaskExecutionResult(
-                    original_command=(
-                        plan.original_command
-                    ),
-                    success=False,
-                    blocked=False,
-                    stopped_at=step.index,
-                    steps=tuple(
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
                         executed_steps
                     ),
-                    runtime_outputs=(
-                        self._runtime_outputs(
-                            runtime_context,
-                            plan,
-                        )
+                    runtime_context=(
+                        runtime_context
                     ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=False,
                 )
 
             clean_response = (
@@ -314,12 +393,15 @@ class TaskExecutor:
                 .strip()
             )
 
-            # ==================================================
+            # =================================================
             # FAIL FAST
-            # ==================================================
+            # =================================================
 
-            if self._response_indicates_failure(
-                clean_response
+            if (
+                self
+                ._response_indicates_failure(
+                    clean_response
+                )
             ):
                 executed_steps.append(
                     StepExecutionResult(
@@ -329,7 +411,8 @@ class TaskExecutor:
                             actual_handler
                         ),
                         status=(
-                            ExecutionStatus.FAILED
+                            ExecutionStatus
+                            .FAILED
                         ),
                         response=(
                             clean_response
@@ -337,51 +420,90 @@ class TaskExecutor:
                     )
                 )
 
-                return TaskExecutionResult(
-                    original_command=(
-                        plan.original_command
-                    ),
-                    success=False,
-                    blocked=False,
-                    stopped_at=step.index,
-                    steps=tuple(
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
                         executed_steps
                     ),
-                    runtime_outputs=(
-                        self._runtime_outputs(
-                            runtime_context,
-                            plan,
-                        )
+                    runtime_context=(
+                        runtime_context
                     ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=False,
                 )
 
-            # ==================================================
-            # RECORD STRUCTURED RUNTIME OUTPUT
-            # ==================================================
-            #
-            # For now all ordinary successful skills publish
-            # TEXT output.
-            #
-            # Later SearchSkill can publish SEARCH_RESULTS,
-            # and an actual page-opening skill can publish PAGE.
-            #
-            # We deliberately do NOT pretend that opening a
-            # Google search page means structured search results
-            # have already been extracted.
+            # =================================================
+            # RUNTIME OUTPUT
+            # =================================================
 
-            runtime_context.record(
-                StepRuntimeOutput(
-                    step_index=step.index,
-                    output_type=(
-                        RuntimeOutputType.TEXT
-                    ),
-                    text=clean_response,
-                )
+            runtime_output = (
+                explicit_runtime_output
             )
 
-            # ==================================================
-            # RECORD SUCCESS
-            # ==================================================
+            if runtime_output is None:
+                runtime_output = (
+                    self._build_runtime_output(
+                        skill=skill,
+                        step_index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
+                        response=(
+                            clean_response
+                        ),
+                    )
+                )
+
+            # Never let a skill publish data as if it
+            # belonged to another task step.
+            if (
+                runtime_output
+                .step_index
+                != step.index
+            ):
+                executed_steps.append(
+                    StepExecutionResult(
+                        index=step.index,
+                        command=step.command,
+                        handler=(
+                            actual_handler
+                        ),
+                        status=(
+                            ExecutionStatus
+                            .FAILED
+                        ),
+                        response=(
+                            "Runtime output step "
+                            "index mismatch."
+                        ),
+                    )
+                )
+
+                return self._failure_result(
+                    plan=plan,
+                    executed_steps=(
+                        executed_steps
+                    ),
+                    runtime_context=(
+                        runtime_context
+                    ),
+                    stopped_at=(
+                        step.index
+                    ),
+                    blocked=False,
+                )
+
+            runtime_context.record(
+                runtime_output
+            )
+
+            # =================================================
+            # SUCCESS
+            # =================================================
 
             executed_steps.append(
                 StepExecutionResult(
@@ -391,7 +513,8 @@ class TaskExecutor:
                         actual_handler
                     ),
                     status=(
-                        ExecutionStatus.SUCCESS
+                        ExecutionStatus
+                        .SUCCESS
                     ),
                     response=(
                         clean_response
@@ -399,9 +522,9 @@ class TaskExecutor:
                 )
             )
 
-        # ==================================================
+        # =====================================================
         # COMPLETE SUCCESS
-        # ==================================================
+        # =====================================================
 
         return TaskExecutionResult(
             original_command=(
@@ -421,9 +544,270 @@ class TaskExecutor:
             ),
         )
 
-    # ==================================================
+    # =====================================================
+    # RESOLVE REFERENCES
+    # =====================================================
+
+    def _resolve_references(
+        self,
+        step: ValidatedStep,
+        runtime_context:
+            TaskRuntimeContext,
+    ) -> (
+        tuple[
+            ReferenceResolution,
+            ...
+        ]
+        | None
+    ):
+        if not step.references:
+            return ()
+
+        resolutions: list[
+            ReferenceResolution
+        ] = []
+
+        for reference in (
+            step.references
+        ):
+            resolution = (
+                task_reference_resolver
+                .resolve(
+                    reference,
+                    runtime_context,
+                )
+            )
+
+            if not resolution.resolved:
+                return None
+
+            resolutions.append(
+                resolution
+            )
+
+        return tuple(
+            resolutions
+        )
+
+    # =====================================================
+    # EXECUTE ONE STEP
+    # =====================================================
+
+    def _execute_step(
+        self,
+        skill: object,
+        step: ValidatedStep,
+        resolutions: tuple[
+            ReferenceResolution,
+            ...
+        ],
+    ) -> tuple[
+        str,
+        StepRuntimeOutput | None,
+    ]:
+        # -------------------------------------------------
+        # CONTEXTUAL EXECUTION
+        # -------------------------------------------------
+
+        if resolutions:
+            contextual_executor = (
+                getattr(
+                    skill,
+                    "execute_with_references",
+                    None,
+                )
+            )
+
+            if not callable(
+                contextual_executor
+            ):
+                raise RuntimeError(
+                    (
+                        "Context-aware skill "
+                        "execution is unavailable."
+                    )
+                )
+
+            result = (
+                contextual_executor(
+                    step.index,
+                    step.command,
+                    resolutions,
+                )
+            )
+
+            if (
+                not isinstance(
+                    result,
+                    tuple,
+                )
+                or len(
+                    result
+                )
+                != 2
+            ):
+                raise RuntimeError(
+                    (
+                        "Context-aware skill returned "
+                        "an invalid execution result."
+                    )
+                )
+
+            response = (
+                str(
+                    result[0]
+                )
+            )
+
+            runtime_output = (
+                result[1]
+            )
+
+            if (
+                runtime_output is not None
+                and not isinstance(
+                    runtime_output,
+                    StepRuntimeOutput,
+                )
+            ):
+                raise RuntimeError(
+                    (
+                        "Context-aware skill returned "
+                        "an invalid runtime output."
+                    )
+                )
+
+            return (
+                response,
+                runtime_output,
+            )
+
+        # -------------------------------------------------
+        # NORMAL EXECUTION
+        # -------------------------------------------------
+
+        normal_executor = (
+            getattr(
+                skill,
+                "execute",
+                None,
+            )
+        )
+
+        if not callable(
+            normal_executor
+        ):
+            raise RuntimeError(
+                (
+                    "Skill has no executable "
+                    "handler."
+                )
+            )
+
+        return (
+            str(
+                normal_executor(
+                    step.command
+                )
+            ),
+            None,
+        )
+
+    # =====================================================
+    # BUILD RUNTIME OUTPUT
+    # =====================================================
+
+    def _build_runtime_output(
+        self,
+        skill: object,
+        step_index: int,
+        command: str,
+        response: str,
+    ) -> StepRuntimeOutput:
+        builder = (
+            getattr(
+                skill,
+                "build_runtime_output",
+                None,
+            )
+        )
+
+        if callable(
+            builder
+        ):
+            try:
+                output = (
+                    builder(
+                        step_index,
+                        command,
+                        response,
+                    )
+                )
+
+                if isinstance(
+                    output,
+                    StepRuntimeOutput,
+                ):
+                    if (
+                        output.step_index
+                        == step_index
+                    ):
+                        return output
+
+            except Exception as error:
+                print(
+                    (
+                        "Runtime output builder "
+                        "failed for "
+                        f"{type(skill).__name__}: "
+                        f"{error}"
+                    )
+                )
+
+        return StepRuntimeOutput(
+            step_index=step_index,
+            output_type=(
+                RuntimeOutputType.TEXT
+            ),
+            text=response,
+        )
+
+    # =====================================================
+    # FAILURE RESULT
+    # =====================================================
+
+    def _failure_result(
+        self,
+        plan: ValidatedPlan,
+        executed_steps: list[
+            StepExecutionResult
+        ],
+        runtime_context:
+            TaskRuntimeContext,
+        stopped_at: int,
+        blocked: bool,
+    ) -> TaskExecutionResult:
+        return TaskExecutionResult(
+            original_command=(
+                plan.original_command
+            ),
+            success=False,
+            blocked=blocked,
+            stopped_at=stopped_at,
+            steps=tuple(
+                executed_steps
+            ),
+            runtime_outputs=(
+                self._runtime_outputs(
+                    runtime_context,
+                    plan,
+                )
+            ),
+        )
+
+    # =====================================================
     # FAILURE DETECTION
-    # ==================================================
+    # =====================================================
 
     def _response_indicates_failure(
         self,
@@ -442,13 +826,14 @@ class TaskExecutor:
             self.FAILURE_PREFIXES
         )
 
-    # ==================================================
+    # =====================================================
     # RUNTIME OUTPUT SNAPSHOT
-    # ==================================================
+    # =====================================================
 
     def _runtime_outputs(
         self,
-        runtime_context: TaskRuntimeContext,
+        runtime_context:
+            TaskRuntimeContext,
         plan: ValidatedPlan,
     ) -> tuple[
         StepRuntimeOutput,
@@ -458,7 +843,9 @@ class TaskExecutor:
             StepRuntimeOutput
         ] = []
 
-        for step in plan.steps:
+        for step in (
+            plan.steps
+        ):
             output = (
                 runtime_context
                 .get(
@@ -466,7 +853,9 @@ class TaskExecutor:
                 )
             )
 
-            if output is not None:
+            if (
+                output is not None
+            ):
                 outputs.append(
                     output
                 )
@@ -476,4 +865,6 @@ class TaskExecutor:
         )
 
 
-task_executor = TaskExecutor()
+task_executor = (
+    TaskExecutor()
+)

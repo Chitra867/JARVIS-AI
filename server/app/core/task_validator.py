@@ -1,5 +1,10 @@
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import (
+    dataclass,
+)
+
+from enum import (
+    Enum,
+)
 
 from app.core.intent_classifier import (
     IntentType,
@@ -7,6 +12,7 @@ from app.core.intent_classifier import (
 )
 
 from app.core.task_context import (
+    TaskReference,
     task_context_analyzer,
 )
 
@@ -28,13 +34,28 @@ from app.skills.registry import (
 )
 
 
-class StepType(str, Enum):
+# =========================================================
+# STEP TYPE
+# =========================================================
+
+
+class StepType(
+    str,
+    Enum,
+):
     SKILL = "skill"
     AI = "ai"
     BLOCKED = "blocked"
 
 
-@dataclass(frozen=True)
+# =========================================================
+# VALIDATED STEP
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class ValidatedStep:
     index: int
     command: str
@@ -43,10 +64,24 @@ class ValidatedStep:
     allowed: bool
     reason: str
 
+    # Runtime dependencies attached to the step.
+    references: tuple[
+        TaskReference,
+        ...
+    ] = ()
 
-@dataclass(frozen=True)
+
+# =========================================================
+# VALIDATED PLAN
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class ValidatedPlan:
     original_command: str
+
     steps: tuple[
         ValidatedStep,
         ...
@@ -57,7 +92,10 @@ class ValidatedPlan:
         self,
     ) -> bool:
         return (
-            len(self.steps) > 1
+            len(
+                self.steps
+            )
+            > 1
         )
 
     @property
@@ -65,10 +103,13 @@ class ValidatedPlan:
         self,
     ) -> bool:
         return (
-            bool(self.steps)
+            bool(
+                self.steps
+            )
             and all(
                 step.allowed
-                for step in self.steps
+                for step
+                in self.steps
             )
         )
 
@@ -81,15 +122,21 @@ class ValidatedPlan:
     ]:
         return tuple(
             step
-            for step in self.steps
+            for step
+            in self.steps
             if not step.allowed
         )
 
 
+# =========================================================
+# VALIDATOR
+# =========================================================
+
+
 class TaskValidator:
-    # ==================================================
+    # =====================================================
     # VALIDATE RAW COMMAND
-    # ==================================================
+    # =====================================================
 
     def validate(
         self,
@@ -102,13 +149,15 @@ class TaskValidator:
             )
         )
 
-        return self.validate_plan(
-            plan
+        return (
+            self.validate_plan(
+                plan
+            )
         )
 
-    # ==================================================
+    # =====================================================
     # VALIDATE PLAN
-    # ==================================================
+    # =====================================================
 
     def validate_plan(
         self,
@@ -125,31 +174,29 @@ class TaskValidator:
             ValidatedStep
         ] = []
 
-        for step in contextual_plan.steps:
-            # ==========================================
-            # CONTEXT-DEPENDENT STEP
-            # ==========================================
+        for step in (
+            contextual_plan.steps
+        ):
+            # =================================================
+            # UNRESOLVED DEPENDENCY SOURCE
+            # =================================================
+            #
+            # Example:
+            #
+            # "open the first result"
+            #
+            # with no earlier search.
+            #
+            # This must remain fail-closed.
+            # =================================================
 
-            if step.references:
-                unresolved = any(
-                    not reference.is_resolved
-                    for reference
-                    in step.references
-                )
+            unresolved = any(
+                not reference.is_resolved
+                for reference
+                in step.references
+            )
 
-                if unresolved:
-                    reason = (
-                        "Context reference has no "
-                        "earlier source step."
-                    )
-
-                else:
-                    reason = (
-                        "Context-dependent step "
-                        "requires runtime reference "
-                        "resolution."
-                    )
-
+            if unresolved:
                 validated_steps.append(
                     ValidatedStep(
                         index=step.index,
@@ -159,36 +206,80 @@ class TaskValidator:
                         ),
                         handler=None,
                         allowed=False,
-                        reason=reason,
+                        reason=(
+                            "Context reference has no "
+                            "earlier source step."
+                        ),
+                        references=(
+                            step.references
+                        ),
                     )
                 )
 
                 continue
 
+            # =================================================
+            # NORMAL / RESOLVABLE STEP
+            # =================================================
+            #
+            # At validation time we only establish that:
+            #
+            # 1. dependency source exists
+            # 2. a deterministic skill can handle this step
+            #
+            # The actual SearchResult/PageResource value is
+            # resolved later by TaskExecutor.
+            # =================================================
+
             validated_steps.append(
                 self._validate_step(
                     index=step.index,
                     command=step.command,
+                    references=(
+                        step.references
+                    ),
                 )
             )
 
-        # ==================================================
+        # =====================================================
         # BLOCK AI INSIDE MULTI-STEP EXECUTION
-        # ==================================================
+        # =====================================================
+        #
+        # We intentionally preserve your current safety rule.
+        #
+        # Therefore:
+        #
+        # search X -> open first result
+        #
+        # can now execute.
+        #
+        # But:
+        #
+        # search X -> open first result -> summarize that page
+        #
+        # remains blocked until AI substeps are integrated
+        # with JARVIS conversation/memory lifecycle.
+        # =====================================================
 
         if (
-            len(validated_steps) > 1
+            len(
+                validated_steps
+            )
+            > 1
             and any(
                 step.step_type
                 == StepType.AI
-                for step in validated_steps
+                for step
+                in validated_steps
             )
         ):
             protected_steps: list[
                 ValidatedStep
             ] = []
 
-            for step in validated_steps:
+            for step in (
+                validated_steps
+            ):
                 if (
                     step.step_type
                     == StepType.AI
@@ -200,12 +291,17 @@ class TaskValidator:
                             step_type=(
                                 StepType.BLOCKED
                             ),
-                            handler=step.handler,
+                            handler=(
+                                step.handler
+                            ),
                             allowed=False,
                             reason=(
                                 "AI reasoning cannot yet "
                                 "run inside a multi-step "
                                 "execution plan."
+                            ),
+                            references=(
+                                step.references
                             ),
                         )
                     )
@@ -228,14 +324,18 @@ class TaskValidator:
             ),
         )
 
-    # ==================================================
+    # =====================================================
     # VALIDATE INDIVIDUAL STEP
-    # ==================================================
+    # =====================================================
 
     def _validate_step(
         self,
         index: int,
         command: str,
+        references: tuple[
+            TaskReference,
+            ...
+        ] = (),
     ) -> ValidatedStep:
         command = (
             command
@@ -254,6 +354,9 @@ class TaskValidator:
                 reason=(
                     "Empty task step."
                 ),
+                references=(
+                    references
+                ),
             )
 
         skill = (
@@ -263,9 +366,9 @@ class TaskValidator:
             )
         )
 
-        # ==================================================
+        # =====================================================
         # REAL DETERMINISTIC SKILL
-        # ==================================================
+        # =====================================================
 
         if (
             skill is not None
@@ -292,17 +395,22 @@ class TaskValidator:
                     StepType.SKILL
                 ),
                 handler=(
-                    type(skill).__name__
+                    type(
+                        skill
+                    ).__name__
                 ),
                 allowed=True,
                 reason=(
                     result.reason
                 ),
+                references=(
+                    references
+                ),
             )
 
-        # ==================================================
+        # =====================================================
         # CLASSIFY NON-DETERMINISTIC STEP
-        # ==================================================
+        # =====================================================
 
         result = (
             intent_classifier
@@ -312,17 +420,19 @@ class TaskValidator:
             )
         )
 
-        # ==================================================
+        # =====================================================
         # UNSUPPORTED REAL-WORLD ACTION
-        # ==================================================
+        # =====================================================
 
         if (
             isinstance(
                 skill,
                 ActionGuardSkill,
             )
-            or result.intent
-            == IntentType.ACTION
+            or (
+                result.intent
+                == IntentType.ACTION
+            )
         ):
             return ValidatedStep(
                 index=index,
@@ -331,7 +441,9 @@ class TaskValidator:
                     StepType.BLOCKED
                 ),
                 handler=(
-                    type(skill).__name__
+                    type(
+                        skill
+                    ).__name__
                     if skill is not None
                     else None
                 ),
@@ -340,11 +452,14 @@ class TaskValidator:
                     "No real skill can safely "
                     "perform this action."
                 ),
+                references=(
+                    references
+                ),
             )
 
-        # ==================================================
+        # =====================================================
         # NESTED MULTI-STEP COMMAND
-        # ==================================================
+        # =====================================================
 
         if (
             result.intent
@@ -362,11 +477,14 @@ class TaskValidator:
                     "Nested multi-step command "
                     "requires additional planning."
                 ),
+                references=(
+                    references
+                ),
             )
 
-        # ==================================================
+        # =====================================================
         # AI REASONING
-        # ==================================================
+        # =====================================================
 
         if isinstance(
             skill,
@@ -384,11 +502,14 @@ class TaskValidator:
                     "Conversational reasoning "
                     "can be handled by AI."
                 ),
+                references=(
+                    references
+                ),
             )
 
-        # ==================================================
+        # =====================================================
         # NO HANDLER
-        # ==================================================
+        # =====================================================
 
         return ValidatedStep(
             index=index,
@@ -402,7 +523,12 @@ class TaskValidator:
                 "No handler is available "
                 "for this step."
             ),
+            references=(
+                references
+            ),
         )
 
 
-task_validator = TaskValidator()
+task_validator = (
+    TaskValidator()
+)

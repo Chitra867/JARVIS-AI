@@ -1,10 +1,30 @@
 import urllib.parse
 import webbrowser
 
-from app.skills.base import Skill
+from app.core.search_provider import (
+    SearchProviderError,
+    search_provider_registry,
+)
+
+from app.core.task_runtime import (
+    RuntimeOutputType,
+    StepRuntimeOutput,
+)
+
+from app.skills.base import (
+    Skill,
+)
 
 
-class SearchSkill(Skill):
+class SearchSkill(
+    Skill
+):
+    STRUCTURED_PROVIDER = (
+        "ddgs"
+    )
+
+    STRUCTURED_RESULT_LIMIT = 5
+
     # ==================================================
     # ROUTING
     # ==================================================
@@ -76,6 +96,96 @@ class SearchSkill(Skill):
         )
 
     # ==================================================
+    # STRUCTURED RUNTIME OUTPUT
+    # ==================================================
+    #
+    # TaskExecutor calls this after a successful search.
+    #
+    # Normal SearchSkill execution still behaves exactly
+    # as before and opens the user's browser.
+    #
+    # The structured result is additional machine-readable
+    # context used by later task steps.
+    # ==================================================
+
+    def build_runtime_output(
+        self,
+        step_index: int,
+        command: str,
+        response: str,
+    ) -> StepRuntimeOutput:
+        provider, query = (
+            self.parse_search(
+                command
+            )
+        )
+
+        # YouTube structured results are not implemented
+        # yet. Preserve the normal textual output.
+        if (
+            provider == "youtube"
+            or not query
+        ):
+            return StepRuntimeOutput(
+                step_index=step_index,
+                output_type=(
+                    RuntimeOutputType.TEXT
+                ),
+                text=response,
+            )
+
+        try:
+            results = (
+                search_provider_registry
+                .search(
+                    self.STRUCTURED_PROVIDER,
+                    query,
+                    limit=(
+                        self
+                        .STRUCTURED_RESULT_LIMIT
+                    ),
+                )
+            )
+
+        except SearchProviderError as error:
+            # Browser search has already succeeded.
+            # Structured-search failure should not break
+            # ordinary single-step search behavior.
+            print(
+                (
+                    "Structured search "
+                    f"unavailable: {error}"
+                )
+            )
+
+            return StepRuntimeOutput(
+                step_index=step_index,
+                output_type=(
+                    RuntimeOutputType.TEXT
+                ),
+                text=response,
+            )
+
+        if not results:
+            return StepRuntimeOutput(
+                step_index=step_index,
+                output_type=(
+                    RuntimeOutputType.TEXT
+                ),
+                text=response,
+            )
+
+        return StepRuntimeOutput(
+            step_index=step_index,
+            output_type=(
+                RuntimeOutputType
+                .SEARCH_RESULTS
+            ),
+            text=response,
+            search_results=results,
+        )
+
+    # ==================================================
     # PARSE SEARCH
     # ==================================================
 
@@ -131,7 +241,9 @@ class SearchSkill(Skill):
             ),
         )
 
-        for prefix, provider in patterns:
+        for prefix, provider in (
+            patterns
+        ):
             if lowered.startswith(
                 prefix
             ):
@@ -140,7 +252,9 @@ class SearchSkill(Skill):
                         len(prefix):
                     ]
                     .strip()
-                    .rstrip(".!?")
+                    .rstrip(
+                        ".!?"
+                    )
                     .strip()
                 )
 
@@ -155,7 +269,7 @@ class SearchSkill(Skill):
         )
 
     # ==================================================
-    # GOOGLE
+    # GOOGLE BROWSER SEARCH
     # ==================================================
 
     def _google(
@@ -165,7 +279,9 @@ class SearchSkill(Skill):
         query = (
             query
             .strip()
-            .rstrip(".!?")
+            .rstrip(
+                ".!?"
+            )
             .strip()
         )
 
@@ -183,7 +299,8 @@ class SearchSkill(Skill):
         )
 
         url = (
-            "https://www.google.com/search"
+            "https://www.google.com/"
+            "search"
             f"?q={encoded}"
         )
 
@@ -201,7 +318,7 @@ class SearchSkill(Skill):
             )
 
         return (
-            f"Searching Google for "
+            "Searching Google for "
             f"{query}."
         )
 
@@ -216,14 +333,17 @@ class SearchSkill(Skill):
         query = (
             query
             .strip()
-            .rstrip(".!?")
+            .rstrip(
+                ".!?"
+            )
             .strip()
         )
 
         if not query:
             return (
                 "Tell me what you want "
-                "me to search for on YouTube."
+                "me to search for "
+                "on YouTube."
             )
 
         encoded = (
@@ -234,7 +354,8 @@ class SearchSkill(Skill):
         )
 
         url = (
-            "https://www.youtube.com/results"
+            "https://www.youtube.com/"
+            "results"
             f"?search_query={encoded}"
         )
 
@@ -252,6 +373,6 @@ class SearchSkill(Skill):
             )
 
         return (
-            f"Searching YouTube for "
+            "Searching YouTube for "
             f"{query}."
         )
