@@ -62,6 +62,9 @@ from app.skills.windows_control_skill import (
     WindowsControlSkill,
 )
 
+from app.skills.screen_vision_skill import (
+    ScreenVisionSkill,
+)
 
 class SkillRegistry:
     def __init__(
@@ -89,6 +92,12 @@ class SkillRegistry:
             PowerControlSkill(),
 
             ScreenshotSkill(),
+
+            ScreenshotSkill(),
+
+            ScreenVisionSkill(),
+
+            AppLauncherSkill(),
 
             AppLauncherSkill(),
 
