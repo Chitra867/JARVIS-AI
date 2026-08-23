@@ -37,22 +37,56 @@ class PageReadError(
 class ReadableHTMLParser(
     HTMLParser
 ):
-    IGNORE_TAGS = {
+    HARD_IGNORE_TAGS = {
         "script",
         "style",
         "noscript",
         "svg",
         "canvas",
         "template",
+        "iframe",
+        "object",
+    }
+
+    UI_IGNORE_TAGS = {
+        "nav",
+        "footer",
+        "aside",
+        "form",
+        "button",
+        "menu",
+        "dialog",
+        "select",
+        "option",
+    }
+
+    VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
     }
 
     BLOCK_TAGS = {
         "article",
-        "aside",
         "blockquote",
         "br",
+        "dd",
         "div",
-        "footer",
+        "dl",
+        "dt",
+        "figure",
+        "figcaption",
         "h1",
         "h2",
         "h3",
@@ -62,14 +96,64 @@ class ReadableHTMLParser(
         "header",
         "li",
         "main",
-        "nav",
         "p",
+        "pre",
         "section",
         "table",
         "td",
         "th",
         "tr",
     }
+
+    PRIMARY_ID_PATTERN = re.compile(
+        (
+            r"^(?:"
+            r"mw-content-text|"
+            r"bodycontent|"
+            r"content|"
+            r"main-content|"
+            r"article-content|"
+            r"post-content|"
+            r"entry-content"
+            r")$"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    PRIMARY_CLASS_PATTERN = re.compile(
+        (
+            r"(?:^|\s)"
+            r"(?:"
+            r"mw-parser-output|"
+            r"article-content|"
+            r"post-content|"
+            r"entry-content|"
+            r"main-content"
+            r")"
+            r"(?:\s|$)"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    NOISE_LINES = {
+        "jump to content",
+        "main menu",
+        "navigation",
+        "search",
+        "appearance",
+        "personal tools",
+        "create account",
+        "log in",
+        "donate",
+        "tools",
+        "actions",
+        "general",
+        "edit",
+        "view history",
+        "languages",
+    }
+
+    PRIMARY_MIN_CHARS = 100
 
     def __init__(
         self,
@@ -78,15 +162,41 @@ class ReadableHTMLParser(
             convert_charrefs=True,
         )
 
-        self._ignored_depth = 0
         self._title_depth = 0
+        self._body_depth = 0
+        self._hard_ignore_depth = 0
+        self._ui_ignore_depth = 0
+        self._primary_depth = 0
 
         self._title_parts: list[
             str
         ] = []
 
-        self._parts: list[
+        self._fallback_parts: list[
             str
+        ] = []
+
+        self._primary_parts: list[
+            str
+        ] = []
+
+        # (
+        #     tag,
+        #     started_title,
+        #     started_body,
+        #     started_hard_ignore,
+        #     started_ui_ignore,
+        #     started_primary,
+        # )
+        self._stack: list[
+            tuple[
+                str,
+                bool,
+                bool,
+                bool,
+                bool,
+                bool,
+            ]
         ] = []
 
     # =====================================================
@@ -94,6 +204,130 @@ class ReadableHTMLParser(
     # =====================================================
 
     def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[
+            tuple[
+                str,
+                str | None,
+            ]
+        ],
+    ) -> None:
+        normalized = (
+            tag
+            .strip()
+            .lower()
+        )
+
+        attributes = self._normalize_attrs(
+            attrs
+        )
+
+        started_title = False
+        started_body = False
+        started_hard_ignore = False
+        started_ui_ignore = False
+        started_primary = False
+
+        # -------------------------------------------------
+        # TITLE
+        # -------------------------------------------------
+
+        if (
+            normalized == "title"
+            and self._hard_ignore_depth == 0
+        ):
+            self._title_depth += 1
+            started_title = True
+
+        # -------------------------------------------------
+        # BODY
+        # -------------------------------------------------
+
+        if normalized == "body":
+            self._body_depth += 1
+            started_body = True
+
+        # -------------------------------------------------
+        # HARD IGNORE
+        # -------------------------------------------------
+
+        if (
+            normalized
+            in self.HARD_IGNORE_TAGS
+        ):
+            self._hard_ignore_depth += 1
+            started_hard_ignore = True
+
+        # -------------------------------------------------
+        # UI IGNORE
+        # -------------------------------------------------
+
+        elif (
+            self._hard_ignore_depth == 0
+            and normalized
+            in self.UI_IGNORE_TAGS
+        ):
+            self._ui_ignore_depth += 1
+            started_ui_ignore = True
+
+        # -------------------------------------------------
+        # PRIMARY CONTENT
+        # -------------------------------------------------
+
+        if (
+            self._hard_ignore_depth == 0
+            and self._ui_ignore_depth == 0
+            and self._is_primary_container(
+                normalized,
+                attributes,
+            )
+        ):
+            self._primary_depth += 1
+            started_primary = True
+
+        # -------------------------------------------------
+        # FORMAT
+        # -------------------------------------------------
+
+        if self._is_readable():
+            if (
+                normalized
+                in self.BLOCK_TAGS
+            ):
+                self._append_content(
+                    "\n"
+                )
+
+            if normalized == "li":
+                self._append_content(
+                    "- "
+                )
+
+        # -------------------------------------------------
+        # STACK
+        # -------------------------------------------------
+
+        if (
+            normalized
+            not in self.VOID_TAGS
+        ):
+            self._stack.append(
+                (
+                    normalized,
+                    started_title,
+                    started_body,
+                    started_hard_ignore,
+                    started_ui_ignore,
+                    started_primary,
+                )
+            )
+
+    # =====================================================
+    # SELF-CLOSING TAG
+    # =====================================================
+
+    def handle_startendtag(
         self,
         tag: str,
         attrs: list[
@@ -111,25 +345,14 @@ class ReadableHTMLParser(
             .lower()
         )
 
-        if (
-            normalized
-            in self.IGNORE_TAGS
-        ):
-            self._ignored_depth += 1
-
+        if not self._is_readable():
             return
-
-        if self._ignored_depth:
-            return
-
-        if normalized == "title":
-            self._title_depth += 1
 
         if (
             normalized
             in self.BLOCK_TAGS
         ):
-            self._parts.append(
+            self._append_content(
                 "\n"
             )
 
@@ -147,31 +370,85 @@ class ReadableHTMLParser(
             .lower()
         )
 
-        if (
-            normalized
-            in self.IGNORE_TAGS
-        ):
-            if self._ignored_depth:
-                self._ignored_depth -= 1
+        matching_index: (
+            int | None
+        ) = None
 
+        for index in range(
+            len(self._stack) - 1,
+            -1,
+            -1,
+        ):
+            if (
+                self._stack[
+                    index
+                ][0]
+                == normalized
+            ):
+                matching_index = index
+                break
+
+        if matching_index is None:
             return
 
-        if self._ignored_depth:
-            return
-
         if (
-            normalized == "title"
-            and self._title_depth
-        ):
-            self._title_depth -= 1
-
-        if (
-            normalized
+            self._is_readable()
+            and normalized
             in self.BLOCK_TAGS
         ):
-            self._parts.append(
+            self._append_content(
                 "\n"
             )
+
+        entries = (
+            self._stack[
+                matching_index:
+            ]
+        )
+
+        del self._stack[
+            matching_index:
+        ]
+
+        for (
+            _,
+            started_title,
+            started_body,
+            started_hard_ignore,
+            started_ui_ignore,
+            started_primary,
+        ) in reversed(
+            entries
+        ):
+            if (
+                started_primary
+                and self._primary_depth
+            ):
+                self._primary_depth -= 1
+
+            if (
+                started_ui_ignore
+                and self._ui_ignore_depth
+            ):
+                self._ui_ignore_depth -= 1
+
+            if (
+                started_hard_ignore
+                and self._hard_ignore_depth
+            ):
+                self._hard_ignore_depth -= 1
+
+            if (
+                started_body
+                and self._body_depth
+            ):
+                self._body_depth -= 1
+
+            if (
+                started_title
+                and self._title_depth
+            ):
+                self._title_depth -= 1
 
     # =====================================================
     # TEXT
@@ -181,9 +458,6 @@ class ReadableHTMLParser(
         self,
         data: str,
     ) -> None:
-        if self._ignored_depth:
-            return
-
         text = (
             data
             .strip()
@@ -196,14 +470,157 @@ class ReadableHTMLParser(
             self._title_parts.append(
                 text
             )
+            return
 
-        self._parts.append(
+        if not self._is_readable():
+            return
+
+        self._append_content(
             text
         )
 
-        self._parts.append(
+        self._append_content(
             " "
         )
+
+    # =====================================================
+    # ATTRIBUTES
+    # =====================================================
+
+    def _normalize_attrs(
+        self,
+        attrs: list[
+            tuple[
+                str,
+                str | None,
+            ]
+        ],
+    ) -> dict[
+        str,
+        str,
+    ]:
+        return {
+            key
+            .strip()
+            .lower():
+                (
+                    value
+                    or ""
+                )
+                .strip()
+                .lower()
+
+            for (
+                key,
+                value,
+            ) in attrs
+        }
+
+    # =====================================================
+    # PRIMARY CONTENT DETECTION
+    # =====================================================
+
+    def _is_primary_container(
+        self,
+        tag: str,
+        attributes: dict[
+            str,
+            str,
+        ],
+    ) -> bool:
+        if tag in {
+            "main",
+            "article",
+        }:
+            return True
+
+        if (
+            attributes.get(
+                "role"
+            )
+            == "main"
+        ):
+            return True
+
+        element_id = (
+            attributes.get(
+                "id",
+                "",
+            )
+        )
+
+        if (
+            element_id
+            and self.PRIMARY_ID_PATTERN
+            .search(
+                element_id
+            )
+        ):
+            return True
+
+        class_name = (
+            attributes.get(
+                "class",
+                "",
+            )
+        )
+
+        if (
+            class_name
+            and self.PRIMARY_CLASS_PATTERN
+            .search(
+                class_name
+            )
+        ):
+            return True
+
+        return False
+
+    # =====================================================
+    # READABLE STATE
+    # =====================================================
+
+    def _is_readable(
+        self,
+    ) -> bool:
+        if self._hard_ignore_depth:
+            return False
+
+        if self._ui_ignore_depth:
+            return False
+
+        # Prefer body content when <body> is present.
+        if (
+            self._body_depth
+            > 0
+        ):
+            return True
+
+        # Some HTML fragments do not contain <body>.
+        return (
+            self._primary_depth
+            > 0
+        )
+
+    # =====================================================
+    # APPEND CONTENT
+    # =====================================================
+
+    def _append_content(
+        self,
+        text: str,
+    ) -> None:
+        self._fallback_parts.append(
+            text
+        )
+
+        if (
+            self._primary_depth
+            > 0
+        ):
+            self._primary_parts.append(
+                text
+            )
 
     # =====================================================
     # TITLE
@@ -226,22 +643,28 @@ class ReadableHTMLParser(
         )
 
     # =====================================================
-    # CONTENT
+    # CLEAN CONTENT
     # =====================================================
 
-    @property
-    def content(
+    def _clean_parts(
         self,
+        parts: list[
+            str
+        ],
     ) -> str:
         raw = (
             "".join(
-                self._parts
+                parts
             )
         )
 
         lines: list[
             str
         ] = []
+
+        previous_line: (
+            str | None
+        ) = None
 
         for line in (
             raw.splitlines()
@@ -255,13 +678,63 @@ class ReadableHTMLParser(
                 .strip()
             )
 
-            if clean:
-                lines.append(
-                    clean
-                )
+            if not clean:
+                continue
+
+            lowered = (
+                clean
+                .casefold()
+            )
+
+            if (
+                lowered
+                in self.NOISE_LINES
+            ):
+                continue
+
+            if (
+                previous_line
+                is not None
+                and lowered
+                == previous_line
+                .casefold()
+            ):
+                continue
+
+            lines.append(
+                clean
+            )
+
+            previous_line = clean
 
         return "\n".join(
             lines
+        )
+
+    # =====================================================
+    # CONTENT
+    # =====================================================
+
+    @property
+    def content(
+        self,
+    ) -> str:
+        primary = (
+            self._clean_parts(
+                self._primary_parts
+            )
+        )
+
+        if (
+            len(primary)
+            >= self.PRIMARY_MIN_CHARS
+        ):
+            return primary
+
+        return (
+            self._clean_parts(
+                self._fallback_parts
+            )
         )
 
 
@@ -271,12 +744,10 @@ class ReadableHTMLParser(
 
 
 class PageReader:
-    # Maximum decoded webpage body.
     MAX_BYTES = (
         1_500_000
     )
 
-    # Maximum readable text sent toward the AI.
     MAX_TEXT_CHARS = (
         24_000
     )
@@ -284,10 +755,6 @@ class PageReader:
     MAX_REDIRECTS = 5
 
     TIMEOUT_SECONDS = 12.0
-
-    # -----------------------------------------------------
-    # Identify JARVIS honestly as an automated client.
-    # -----------------------------------------------------
 
     USER_AGENT = (
         "JARVIS-OS/1.0 "
@@ -330,11 +797,6 @@ class PageReader:
             "Accept-Language":
                 "en-US,en;q=0.9",
 
-            # Prefer plain responses.
-            #
-            # Some servers may still return compressed
-            # content, so _request() also handles that
-            # safely.
             "Accept-Encoding":
                 "identity",
 
@@ -353,11 +815,6 @@ class PageReader:
                 self.MAX_REDIRECTS
                 + 1
             ):
-                # -----------------------------------------
-                # Every redirect destination is validated
-                # before JARVIS connects to it.
-                # -----------------------------------------
-
                 self._validate_public_url(
                     current_url
                 )
@@ -392,10 +849,6 @@ class PageReader:
                             "the webpage."
                         )
                     ) from error
-
-                # =========================================
-                # REDIRECT
-                # =========================================
 
                 if (
                     response.status_code
@@ -432,10 +885,6 @@ class PageReader:
 
                     continue
 
-                # =========================================
-                # SPECIAL HTTP STATUS
-                # =========================================
-
                 if (
                     response.status_code
                     == 403
@@ -459,10 +908,6 @@ class PageReader:
                             "(HTTP 429)."
                         )
                     )
-
-                # =========================================
-                # GENERAL HTTP STATUS
-                # =========================================
 
                 try:
                     response.raise_for_status()
@@ -515,8 +960,6 @@ class PageReader:
             )
         )
 
-        # Capture metadata before closing the streamed
-        # response.
         status_code = (
             response.status_code
         )
@@ -528,16 +971,6 @@ class PageReader:
         extensions = dict(
             response.extensions
         )
-
-        # -------------------------------------------------
-        # EARLY SIZE CHECK
-        # -------------------------------------------------
-        #
-        # Content-Length can refer to compressed bytes.
-        # It is therefore only an early guard.
-        #
-        # The decoded size is checked again while reading.
-        # -------------------------------------------------
 
         content_length = (
             original_headers
@@ -578,15 +1011,6 @@ class PageReader:
         total = 0
 
         try:
-            # -------------------------------------------------
-            # IMPORTANT:
-            #
-            # iter_bytes() returns decoded/decompressed bytes.
-            #
-            # Therefore Content-Encoding MUST NOT be copied
-            # into the reconstructed response below.
-            # -------------------------------------------------
-
             for chunk in (
                 response
                 .iter_bytes()
@@ -632,21 +1056,6 @@ class PageReader:
             )
         )
 
-        # -------------------------------------------------
-        # CLEAN RESPONSE HEADERS
-        # -------------------------------------------------
-        #
-        # The body is already decoded.
-        #
-        # Retaining Content-Encoding such as:
-        #
-        #   gzip
-        #   deflate
-        #   br
-        #
-        # would make httpx decode the body a SECOND time.
-        # -------------------------------------------------
-
         excluded_headers = {
             "content-encoding",
             "content-length",
@@ -681,7 +1090,6 @@ class PageReader:
                 )
             )
 
-        # This length now describes the decoded body.
         clean_headers.append(
             (
                 "Content-Length",
@@ -692,10 +1100,6 @@ class PageReader:
                 ),
             )
         )
-
-        # -------------------------------------------------
-        # RECONSTRUCT BUFFERED RESPONSE
-        # -------------------------------------------------
 
         return httpx.Response(
             status_code=(
@@ -729,10 +1133,6 @@ class PageReader:
             )
             .lower()
         )
-
-        # -------------------------------------------------
-        # Only readable textual resources.
-        # -------------------------------------------------
 
         if not (
             "text/html"
@@ -788,10 +1188,6 @@ class PageReader:
             ].lower()
         )
 
-        # -------------------------------------------------
-        # HTML
-        # -------------------------------------------------
-
         if looks_like_html:
             parser = (
                 ReadableHTMLParser()
@@ -820,10 +1216,6 @@ class PageReader:
                 parser.content
             )
 
-        # -------------------------------------------------
-        # PLAIN TEXT
-        # -------------------------------------------------
-
         else:
             content = (
                 re.sub(
@@ -833,10 +1225,6 @@ class PageReader:
                 )
                 .strip()
             )
-
-        # -------------------------------------------------
-        # LIMIT CONTENT SENT TO OLLAMA
-        # -------------------------------------------------
 
         content = (
             content[
@@ -860,7 +1248,7 @@ class PageReader:
         )
 
     # =====================================================
-    # SAFE PUBLIC URL
+    # URL SAFETY
     # =====================================================
 
     def _validate_public_url(
@@ -879,10 +1267,6 @@ class PageReader:
                 "Invalid webpage URL."
             ) from error
 
-        # -------------------------------------------------
-        # ONLY HTTP / HTTPS
-        # -------------------------------------------------
-
         if (
             parsed.scheme
             not in {
@@ -896,12 +1280,6 @@ class PageReader:
                     "pages are allowed."
                 )
             )
-
-        # -------------------------------------------------
-        # BLOCK EMBEDDED CREDENTIALS
-        #
-        # https://user:password@example.com
-        # -------------------------------------------------
 
         if (
             parsed.username
@@ -927,10 +1305,6 @@ class PageReader:
                 )
             )
 
-        # -------------------------------------------------
-        # LOCALHOST
-        # -------------------------------------------------
-
         if hostname in {
             "localhost",
             "localhost.localdomain",
@@ -951,10 +1325,6 @@ class PageReader:
                     "cannot be analyzed."
                 )
             )
-
-        # -------------------------------------------------
-        # PORT RESTRICTION
-        # -------------------------------------------------
 
         try:
             port = (
@@ -989,10 +1359,6 @@ class PageReader:
                     )
                 )
 
-        # -------------------------------------------------
-        # DNS / SSRF PROTECTION
-        # -------------------------------------------------
-
         self._validate_hostname_ips(
             hostname
         )
@@ -1005,10 +1371,6 @@ class PageReader:
         self,
         hostname: str,
     ) -> None:
-        # -------------------------------------------------
-        # LITERAL IP
-        # -------------------------------------------------
-
         try:
             literal_ip = (
                 ipaddress
@@ -1037,10 +1399,6 @@ class PageReader:
                 )
 
             return
-
-        # -------------------------------------------------
-        # DNS LOOKUP
-        # -------------------------------------------------
 
         try:
             addresses = (
@@ -1072,13 +1430,6 @@ class PageReader:
                     "could not be resolved."
                 )
             )
-
-        # -------------------------------------------------
-        # FAIL CLOSED
-        #
-        # If ANY DNS result resolves to a private/local
-        # address, do not fetch the page.
-        # -------------------------------------------------
 
         for address_info in (
             addresses
