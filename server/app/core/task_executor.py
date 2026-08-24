@@ -439,6 +439,70 @@ class TaskExecutor:
             )
 
             # =================================================
+            # GUARDED UI CLICK OUTCOME
+            # =================================================
+            #
+            # UIAutomationClickSkill can intentionally return
+            # without clicking when:
+            #
+            # - a target is ambiguous
+            # - a target is missing or disabled
+            # - the foreground window changes
+            # - a sensitive action requires confirmation
+            # - confirmation is invalid / expired
+            #
+            # Those responses must stop the plan instead of
+            # being treated as successful task steps.
+            #
+            # Only an actual verified click or an explicit
+            # cancellation counts as successful execution.
+            # =================================================
+
+            if (
+                actual_handler
+                == "UIAutomationClickSkill"
+                and not self._ui_click_response_succeeded(
+                    clean_response
+                )
+            ):
+                executed_steps.append(
+                    StepExecutionResult(
+                        index=(
+                            step.index
+                        ),
+                        command=(
+                            step.command
+                        ),
+                        handler=(
+                            actual_handler
+                        ),
+                        status=(
+                            ExecutionStatus
+                            .BLOCKED
+                        ),
+                        response=(
+                            clean_response
+                        ),
+                    )
+                )
+
+                return (
+                    self._failure_result(
+                        plan=plan,
+                        executed_steps=(
+                            executed_steps
+                        ),
+                        runtime_context=(
+                            runtime_context
+                        ),
+                        stopped_at=(
+                            step.index
+                        ),
+                        blocked=True,
+                    )
+                )
+
+            # =================================================
             # FAIL FAST
             # =================================================
 
@@ -920,6 +984,38 @@ class TaskExecutor:
                 )
             ),
         )
+
+    # =====================================================
+    # GUARDED UI CLICK SUCCESS DETECTION
+    # =====================================================
+
+    def _ui_click_response_succeeded(
+        self,
+        response: str,
+    ) -> bool:
+        normalized = (
+            response
+            .strip()
+            .lower()
+        )
+
+        if not normalized:
+            return False
+
+        if (
+            normalized.startswith(
+                "clicked "
+            )
+        ):
+            return True
+
+        if (
+            normalized
+            == "pending ui click cancelled."
+        ):
+            return True
+
+        return False
 
     # =====================================================
     # FAILURE DETECTION

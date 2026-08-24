@@ -223,19 +223,18 @@ class TaskValidator:
             )
 
         # =================================================
-        # POWER CONFIRMATION TURN BARRIER
+        # SEPARATE-TURN CONFIRMATION BARRIERS
         # =================================================
         #
-        # A destructive power action must never be requested
-        # and confirmed inside the same user command.
+        # Sensitive confirmations must never be requested
+        # and confirmed inside the same multi-step command.
         #
-        # Example blocked plan:
+        # This currently protects:
         #
-        # shutdown computer
-        #       ↓
-        # confirm shutdown
+        # - destructive power confirmations
+        # - sensitive UI click confirmations
         #
-        # Confirmation must arrive as a separate user turn.
+        # The confirmation must arrive in a later user turn.
         # =================================================
 
         if (
@@ -246,6 +245,12 @@ class TaskValidator:
         ):
             validated_steps = (
                 self._protect_power_confirmations(
+                    validated_steps
+                )
+            )
+
+            validated_steps = (
+                self._protect_ui_click_confirmations(
                     validated_steps
                 )
             )
@@ -402,6 +407,91 @@ class TaskValidator:
             normalized
             .startswith(
                 "confirm "
+            )
+        )
+
+    # =====================================================
+    # PROTECT UI CLICK CONFIRMATIONS
+    # =====================================================
+
+    def _protect_ui_click_confirmations(
+        self,
+        steps: list[
+            ValidatedStep
+        ],
+    ) -> list[
+        ValidatedStep
+    ]:
+        protected_steps: list[
+            ValidatedStep
+        ] = []
+
+        for step in (
+            steps
+        ):
+            if (
+                step.allowed
+                and self._is_ui_click_confirmation(
+                    step
+                )
+            ):
+                protected_steps.append(
+                    ValidatedStep(
+                        index=step.index,
+                        command=step.command,
+                        step_type=(
+                            StepType.BLOCKED
+                        ),
+                        handler=(
+                            step.handler
+                        ),
+                        allowed=False,
+                        reason=(
+                            "Sensitive UI click "
+                            "confirmation must be "
+                            "issued as a separate "
+                            "user command."
+                        ),
+                        references=(
+                            step.references
+                        ),
+                    )
+                )
+
+                continue
+
+            protected_steps.append(
+                step
+            )
+
+        return protected_steps
+
+    # =====================================================
+    # DETECT UI CLICK CONFIRMATION
+    # =====================================================
+
+    def _is_ui_click_confirmation(
+        self,
+        step: ValidatedStep,
+    ) -> bool:
+        if (
+            step.handler
+            != "UIAutomationClickSkill"
+        ):
+            return False
+
+        normalized = (
+            self._normalize_command(
+                step.command
+            )
+        )
+
+        return (
+            normalized.startswith(
+                "confirm click "
+            )
+            or normalized.startswith(
+                "confirm ui click "
             )
         )
 
