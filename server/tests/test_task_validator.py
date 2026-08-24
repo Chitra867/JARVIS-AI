@@ -137,10 +137,6 @@ class TaskValidatorTests(
             2,
         )
 
-        # ----------------------------------------------
-        # OPEN NOTEPAD
-        # ----------------------------------------------
-
         open_step = (
             result.steps[0]
         )
@@ -158,10 +154,6 @@ class TaskValidatorTests(
         self.assertTrue(
             open_step.allowed
         )
-
-        # ----------------------------------------------
-        # TYPE HELLO
-        # ----------------------------------------------
 
         type_step = (
             result.steps[1]
@@ -217,6 +209,242 @@ class TaskValidatorTests(
 
         self.assertFalse(
             step.allowed
+        )
+
+    # ==================================================
+    # SINGLE POWER CONFIRMATION
+    # ==================================================
+
+    def test_single_power_confirmation_is_allowed(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                "confirm shutdown"
+            )
+        )
+
+        self.assertFalse(
+            result.is_multi_step
+        )
+
+        self.assertTrue(
+            result.is_safe_to_execute
+        )
+
+        self.assertEqual(
+            len(
+                result.steps
+            ),
+            1,
+        )
+
+        step = (
+            result.steps[0]
+        )
+
+        self.assertEqual(
+            step.step_type,
+            StepType.SKILL,
+        )
+
+        self.assertEqual(
+            step.handler,
+            "PowerControlSkill",
+        )
+
+        self.assertTrue(
+            step.allowed
+        )
+
+    # ==================================================
+    # POWER SELF-CONFIRMATION PROTECTION
+    # ==================================================
+
+    def test_shutdown_cannot_self_confirm(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                (
+                    "shutdown computer then "
+                    "confirm shutdown"
+                )
+            )
+        )
+
+        self.assertTrue(
+            result.is_multi_step
+        )
+
+        self.assertFalse(
+            result.is_safe_to_execute
+        )
+
+        self.assertEqual(
+            len(
+                result.steps
+            ),
+            2,
+        )
+
+        request_step = (
+            result.steps[0]
+        )
+
+        confirm_step = (
+            result.steps[1]
+        )
+
+        self.assertEqual(
+            request_step.handler,
+            "PowerControlSkill",
+        )
+
+        self.assertTrue(
+            request_step.allowed
+        )
+
+        self.assertEqual(
+            confirm_step.handler,
+            "PowerControlSkill",
+        )
+
+        self.assertEqual(
+            confirm_step.step_type,
+            StepType.BLOCKED,
+        )
+
+        self.assertFalse(
+            confirm_step.allowed
+        )
+
+        self.assertIn(
+            "separate user command",
+            confirm_step.reason,
+        )
+
+    def test_restart_cannot_self_confirm(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                (
+                    "restart computer then "
+                    "confirm restart"
+                )
+            )
+        )
+
+        self.assertTrue(
+            result.is_multi_step
+        )
+
+        self.assertFalse(
+            result.is_safe_to_execute
+        )
+
+        confirm_step = (
+            result.steps[1]
+        )
+
+        self.assertEqual(
+            confirm_step.handler,
+            "PowerControlSkill",
+        )
+
+        self.assertEqual(
+            confirm_step.step_type,
+            StepType.BLOCKED,
+        )
+
+        self.assertFalse(
+            confirm_step.allowed
+        )
+
+    def test_sleep_cannot_self_confirm(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                (
+                    "sleep computer then "
+                    "confirm sleep"
+                )
+            )
+        )
+
+        self.assertTrue(
+            result.is_multi_step
+        )
+
+        self.assertFalse(
+            result.is_safe_to_execute
+        )
+
+        confirm_step = (
+            result.steps[1]
+        )
+
+        self.assertEqual(
+            confirm_step.handler,
+            "PowerControlSkill",
+        )
+
+        self.assertEqual(
+            confirm_step.step_type,
+            StepType.BLOCKED,
+        )
+
+        self.assertFalse(
+            confirm_step.allowed
+        )
+
+    # ==================================================
+    # POWER CONFIRMATION INSIDE OTHER PLAN
+    # ==================================================
+
+    def test_power_confirmation_is_blocked_in_any_multi_step_plan(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                (
+                    "open notepad then "
+                    "confirm shutdown"
+                )
+            )
+        )
+
+        self.assertTrue(
+            result.is_multi_step
+        )
+
+        self.assertFalse(
+            result.is_safe_to_execute
+        )
+
+        confirm_step = (
+            result.steps[1]
+        )
+
+        self.assertEqual(
+            confirm_step.handler,
+            "PowerControlSkill",
+        )
+
+        self.assertEqual(
+            confirm_step.step_type,
+            StepType.BLOCKED,
+        )
+
+        self.assertFalse(
+            confirm_step.allowed
         )
 
     # ==================================================
@@ -345,10 +573,6 @@ class TaskValidatorTests(
             2,
         )
 
-        # ----------------------------------------------
-        # SEARCH STEP
-        # ----------------------------------------------
-
         search_step = (
             result.steps[0]
         )
@@ -385,10 +609,6 @@ class TaskValidatorTests(
             (),
         )
 
-        # ----------------------------------------------
-        # OPEN-FIRST-RESULT STEP
-        # ----------------------------------------------
-
         open_step = (
             result.steps[1]
         )
@@ -419,10 +639,6 @@ class TaskValidatorTests(
         self.assertTrue(
             open_step.allowed
         )
-
-        # ----------------------------------------------
-        # RUNTIME REFERENCE
-        # ----------------------------------------------
 
         self.assertEqual(
             len(

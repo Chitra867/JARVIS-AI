@@ -64,7 +64,6 @@ class ValidatedStep:
     allowed: bool
     reason: str
 
-    # Runtime dependencies attached to the step.
     references: tuple[
         TaskReference,
         ...
@@ -177,18 +176,9 @@ class TaskValidator:
         for step in (
             contextual_plan.steps
         ):
-            # =================================================
+            # =============================================
             # UNRESOLVED DEPENDENCY SOURCE
-            # =================================================
-            #
-            # Example:
-            #
-            # "open the first result"
-            #
-            # with no earlier search.
-            #
-            # This must remain fail-closed.
-            # =================================================
+            # =============================================
 
             unresolved = any(
                 not reference.is_resolved
@@ -218,18 +208,9 @@ class TaskValidator:
 
                 continue
 
-            # =================================================
+            # =============================================
             # NORMAL / RESOLVABLE STEP
-            # =================================================
-            #
-            # At validation time we only establish that:
-            #
-            # 1. dependency source exists
-            # 2. a deterministic skill can handle this step
-            #
-            # The actual SearchResult/PageResource value is
-            # resolved later by TaskExecutor.
-            # =================================================
+            # =============================================
 
             validated_steps.append(
                 self._validate_step(
@@ -241,25 +222,43 @@ class TaskValidator:
                 )
             )
 
-        # =====================================================
-        # BLOCK AI INSIDE MULTI-STEP EXECUTION
-        # =====================================================
+        # =================================================
+        # POWER CONFIRMATION TURN BARRIER
+        # =================================================
         #
-        # We intentionally preserve your current safety rule.
+        # A destructive power action must never be requested
+        # and confirmed inside the same user command.
         #
-        # Therefore:
+        # Example blocked plan:
         #
-        # search X -> open first result
+        # shutdown computer
+        #       ↓
+        # confirm shutdown
         #
-        # can now execute.
+        # Confirmation must arrive as a separate user turn.
+        # =================================================
+
+        if (
+            len(
+                validated_steps
+            )
+            > 1
+        ):
+            validated_steps = (
+                self._protect_power_confirmations(
+                    validated_steps
+                )
+            )
+
+        # =================================================
+        # BLOCK AI FALLBACK INSIDE MULTI-STEP EXECUTION
+        # =================================================
         #
-        # But:
+        # Deterministic skills may run in multi-step plans.
         #
-        # search X -> open first result -> summarize that page
-        #
-        # remains blocked until AI substeps are integrated
-        # with JARVIS conversation/memory lifecycle.
-        # =====================================================
+        # Generic AISkill reasoning remains blocked inside
+        # multi-step execution.
+        # =================================================
 
         if (
             len(
@@ -325,6 +324,108 @@ class TaskValidator:
         )
 
     # =====================================================
+    # PROTECT POWER CONFIRMATIONS
+    # =====================================================
+
+    def _protect_power_confirmations(
+        self,
+        steps: list[
+            ValidatedStep
+        ],
+    ) -> list[
+        ValidatedStep
+    ]:
+        protected_steps: list[
+            ValidatedStep
+        ] = []
+
+        for step in (
+            steps
+        ):
+            if (
+                step.allowed
+                and self._is_power_confirmation(
+                    step
+                )
+            ):
+                protected_steps.append(
+                    ValidatedStep(
+                        index=step.index,
+                        command=step.command,
+                        step_type=(
+                            StepType.BLOCKED
+                        ),
+                        handler=(
+                            step.handler
+                        ),
+                        allowed=False,
+                        reason=(
+                            "Power confirmation must be "
+                            "issued as a separate user "
+                            "command."
+                        ),
+                        references=(
+                            step.references
+                        ),
+                    )
+                )
+
+                continue
+
+            protected_steps.append(
+                step
+            )
+
+        return protected_steps
+
+    # =====================================================
+    # DETECT POWER CONFIRMATION
+    # =====================================================
+
+    def _is_power_confirmation(
+        self,
+        step: ValidatedStep,
+    ) -> bool:
+        if (
+            step.handler
+            != "PowerControlSkill"
+        ):
+            return False
+
+        normalized = (
+            self._normalize_command(
+                step.command
+            )
+        )
+
+        return (
+            normalized
+            .startswith(
+                "confirm "
+            )
+        )
+
+    # =====================================================
+    # NORMALIZE COMMAND
+    # =====================================================
+
+    def _normalize_command(
+        self,
+        command: str,
+    ) -> str:
+        return (
+            " ".join(
+                command
+                .strip()
+                .lower()
+                .rstrip(
+                    ".!?"
+                )
+                .split()
+            )
+        )
+
+    # =====================================================
     # VALIDATE INDIVIDUAL STEP
     # =====================================================
 
@@ -366,9 +467,9 @@ class TaskValidator:
             )
         )
 
-        # =====================================================
+        # =================================================
         # REAL DETERMINISTIC SKILL
-        # =====================================================
+        # =================================================
 
         if (
             skill is not None
@@ -408,9 +509,9 @@ class TaskValidator:
                 ),
             )
 
-        # =====================================================
+        # =================================================
         # CLASSIFY NON-DETERMINISTIC STEP
-        # =====================================================
+        # =================================================
 
         result = (
             intent_classifier
@@ -420,9 +521,9 @@ class TaskValidator:
             )
         )
 
-        # =====================================================
+        # =================================================
         # UNSUPPORTED REAL-WORLD ACTION
-        # =====================================================
+        # =================================================
 
         if (
             isinstance(
@@ -457,9 +558,9 @@ class TaskValidator:
                 ),
             )
 
-        # =====================================================
+        # =================================================
         # NESTED MULTI-STEP COMMAND
-        # =====================================================
+        # =================================================
 
         if (
             result.intent
@@ -482,9 +583,9 @@ class TaskValidator:
                 ),
             )
 
-        # =====================================================
+        # =================================================
         # AI REASONING
-        # =====================================================
+        # =================================================
 
         if isinstance(
             skill,
@@ -507,9 +608,9 @@ class TaskValidator:
                 ),
             )
 
-        # =====================================================
+        # =================================================
         # NO HANDLER
-        # =====================================================
+        # =================================================
 
         return ValidatedStep(
             index=index,
