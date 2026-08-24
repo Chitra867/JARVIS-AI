@@ -1,22 +1,72 @@
 import os
 import shutil
 import subprocess
+import time
 import webbrowser
+
+from dataclasses import (
+    dataclass,
+)
 
 from pathlib import (
     Path,
 )
 
 import psutil
+import win32gui
+import win32process
 
 from app.skills.base import (
     Skill,
 )
 
 
+# =========================================================
+# LAUNCH READINESS STATE
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
+class LaunchReadiness:
+    command: str
+    target: str
+    kind: str
+
+    process_names: frozenset[
+        str
+    ]
+
+    previous_foreground_hwnd: int
+
+    created_at: float
+
+
+# =========================================================
+# APP LAUNCHER
+# =========================================================
+
+
 class AppLauncherSkill(
     Skill
 ):
+    # =====================================================
+    # READINESS CONFIGURATION
+    # =====================================================
+
+    READINESS_TIMEOUT_SECONDS = 6.0
+
+    READINESS_POLL_INTERVAL_SECONDS = 0.10
+
+    # Require the same suitable foreground window to be
+    # observed more than once before continuing.
+    READINESS_STABLE_POLLS = 2
+
+    # =====================================================
+    # WEBSITES
+    # =====================================================
+
     WEBSITES = {
         "youtube":
             "https://www.youtube.com",
@@ -45,6 +95,10 @@ class AppLauncherSkill(
         "reddit":
             "https://www.reddit.com",
     }
+
+    # =====================================================
+    # APPLICATION ALIASES
+    # =====================================================
 
     APP_ALIASES = {
         "notepad": [
@@ -80,6 +134,7 @@ class AppLauncherSkill(
 
         "powershell": [
             "powershell.exe",
+            "pwsh.exe",
         ],
 
         "terminal": [
@@ -108,18 +163,126 @@ class AppLauncherSkill(
         ],
     }
 
-    # Exact executable names that may be terminated.
+    # =====================================================
+    # READINESS PROCESS NAMES
+    # =====================================================
+    #
+    # Some launcher executables immediately hand work to a
+    # different process.
+    #
+    # Example:
+    #
+    # wt.exe
+    #   ↓
+    # WindowsTerminal.exe
+    #
+    # calc.exe
+    #   ↓
+    # CalculatorApp.exe
+    #
+    # Therefore readiness checks should not depend solely
+    # on the executable passed to Popen().
+    # =====================================================
+
+    READY_PROCESS_ALIASES = {
+        "notepad": {
+            "notepad.exe",
+        },
+
+        "calculator": {
+            "calculator.exe",
+            "calculatorapp.exe",
+            "calc.exe",
+        },
+
+        "calc": {
+            "calculator.exe",
+            "calculatorapp.exe",
+            "calc.exe",
+        },
+
+        "vs code": {
+            "code.exe",
+        },
+
+        "vscode": {
+            "code.exe",
+        },
+
+        "visual studio code": {
+            "code.exe",
+        },
+
+        "chrome": {
+            "chrome.exe",
+        },
+
+        "powershell": {
+            "powershell.exe",
+            "pwsh.exe",
+        },
+
+        "terminal": {
+            "windowsterminal.exe",
+            "wt.exe",
+            "powershell.exe",
+            "pwsh.exe",
+        },
+
+        "command prompt": {
+            "cmd.exe",
+        },
+
+        "cmd": {
+            "cmd.exe",
+        },
+
+        "file explorer": {
+            "explorer.exe",
+        },
+
+        "explorer": {
+            "explorer.exe",
+        },
+
+        "spotify": {
+            "spotify.exe",
+        },
+    }
+
+    # =====================================================
+    # BROWSER PROCESS NAMES
+    # =====================================================
+
+    BROWSER_PROCESS_NAMES = frozenset(
+        {
+            "chrome.exe",
+            "msedge.exe",
+            "firefox.exe",
+            "brave.exe",
+            "opera.exe",
+            "vivaldi.exe",
+            "arc.exe",
+        }
+    )
+
+    # =====================================================
+    # CLOSE ALIASES
+    # =====================================================
+
     CLOSE_ALIASES = {
         "notepad": {
             "notepad.exe",
         },
 
         "calculator": {
+            "calculator.exe",
             "calculatorapp.exe",
             "calc.exe",
         },
 
         "calc": {
+            "calculator.exe",
             "calculatorapp.exe",
             "calc.exe",
         },
@@ -175,9 +338,21 @@ class AppLauncherSkill(
         "exit ",
     )
 
-    # ==================================================
+    # =====================================================
+    # INIT
+    # =====================================================
+
+    def __init__(
+        self,
+    ) -> None:
+        self._last_launch: (
+            LaunchReadiness
+            | None
+        ) = None
+
+    # =====================================================
     # ROUTING
-    # ==================================================
+    # =====================================================
 
     def can_handle(
         self,
@@ -196,9 +371,9 @@ class AppLauncherSkill(
             )
         )
 
-    # ==================================================
+    # =====================================================
     # EXECUTE
-    # ==================================================
+    # =====================================================
 
     def execute(
         self,
@@ -213,6 +388,16 @@ class AppLauncherSkill(
             clean_command
             .lower()
         )
+
+        # Any new launcher command invalidates an older
+        # readiness observation.
+        self._last_launch = (
+            None
+        )
+
+        # =================================================
+        # CLOSE APPLICATION
+        # =================================================
 
         if normalized.startswith(
             self.CLOSE_PREFIXES
@@ -230,6 +415,10 @@ class AppLauncherSkill(
                 )
             )
 
+        # =================================================
+        # OPEN TARGET
+        # =================================================
+
         target = (
             self._extract_target(
                 clean_command,
@@ -246,11 +435,19 @@ class AppLauncherSkill(
         normalized_target = (
             target
             .lower()
+            .rstrip(
+                ".!?"
+            )
+            .strip()
         )
 
-        # ==============================================
+        previous_hwnd = (
+            self._foreground_window_handle()
+        )
+
+        # =================================================
         # WEBSITE
-        # ==============================================
+        # =================================================
 
         if (
             normalized_target
@@ -262,8 +459,41 @@ class AppLauncherSkill(
                 ]
             )
 
-            webbrowser.open(
-                url
+            try:
+                opened = (
+                    webbrowser.open(
+                        url
+                    )
+                )
+
+            except (
+                OSError,
+                webbrowser.Error,
+            ):
+                return (
+                    f"I couldn't open "
+                    f"{normalized_target}."
+                )
+
+            if (
+                opened
+                is False
+            ):
+                return (
+                    f"I couldn't open "
+                    f"{normalized_target}."
+                )
+
+            self._record_launch(
+                command=clean_command,
+                target=normalized_target,
+                kind="website",
+                process_names=(
+                    self.BROWSER_PROCESS_NAMES
+                ),
+                previous_foreground_hwnd=(
+                    previous_hwnd
+                ),
             )
 
             return (
@@ -271,9 +501,9 @@ class AppLauncherSkill(
                 f"{normalized_target}."
             )
 
-        # ==============================================
+        # =================================================
         # EXPLICIT FILE / FOLDER PATH
-        # ==============================================
+        # =================================================
 
         path = (
             self._resolve_existing_path(
@@ -292,20 +522,34 @@ class AppLauncherSkill(
                     )
                 )
 
-                return (
-                    f"Opening "
-                    f"{path.name or path}."
-                )
-
             except OSError:
                 return (
                     "I couldn't open "
                     "that path."
                 )
 
-        # ==============================================
+            self._record_launch(
+                command=clean_command,
+                target=str(
+                    path
+                ),
+                kind="foreground_change",
+                process_names=(
+                    frozenset()
+                ),
+                previous_foreground_hwnd=(
+                    previous_hwnd
+                ),
+            )
+
+            return (
+                f"Opening "
+                f"{path.name or path}."
+            )
+
+        # =================================================
         # COMMON WINDOWS FOLDER
-        # ==============================================
+        # =================================================
 
         folder = (
             self._get_folder(
@@ -324,20 +568,36 @@ class AppLauncherSkill(
                     )
                 )
 
-                return (
-                    f"Opening "
-                    f"{normalized_target}."
-                )
-
             except OSError:
                 return (
                     f"I couldn't open "
                     f"{normalized_target}."
                 )
 
-        # ==============================================
+            self._record_launch(
+                command=clean_command,
+                target=normalized_target,
+                kind="application",
+                process_names=(
+                    frozenset(
+                        {
+                            "explorer.exe",
+                        }
+                    )
+                ),
+                previous_foreground_hwnd=(
+                    previous_hwnd
+                ),
+            )
+
+            return (
+                f"Opening "
+                f"{normalized_target}."
+            )
+
+        # =================================================
         # APPLICATION
-        # ==============================================
+        # =================================================
 
         executable = (
             self._resolve_app(
@@ -359,25 +619,478 @@ class AppLauncherSkill(
                     ),
                 )
 
-                return (
-                    f"Opening "
-                    f"{normalized_target}."
-                )
-
             except OSError:
                 return (
                     f"I couldn't open "
                     f"{normalized_target}."
                 )
 
+            process_names = (
+                self._readiness_process_names(
+                    app_name=(
+                        normalized_target
+                    ),
+                    executable=(
+                        executable
+                    ),
+                )
+            )
+
+            self._record_launch(
+                command=clean_command,
+                target=normalized_target,
+                kind="application",
+                process_names=(
+                    process_names
+                ),
+                previous_foreground_hwnd=(
+                    previous_hwnd
+                ),
+            )
+
+            return (
+                f"Opening "
+                f"{normalized_target}."
+            )
+
         return (
             f"I don't know how to open "
             f"{target} yet."
         )
 
-    # ==================================================
+    # =====================================================
+    # WAIT UNTIL READY
+    # =====================================================
+    #
+    # This method intentionally does NOT run automatically
+    # inside execute().
+    #
+    # TaskExecutor will call it only when another task step
+    # needs to run after this launch.
+    #
+    # Returns:
+    #
+    # (True, reason)
+    #       → safe to continue to the next step
+    #
+    # (False, reason)
+    #       → stop the multi-step workflow
+    # =====================================================
+
+    def wait_until_ready(
+        self,
+        command: str,
+    ) -> tuple[
+        bool,
+        str,
+    ]:
+        observation = (
+            self._last_launch
+        )
+
+        if (
+            observation
+            is None
+        ):
+            return (
+                True,
+                (
+                    "No launch readiness wait "
+                    "is required."
+                ),
+            )
+
+        if not (
+            self._same_command(
+                command,
+                observation.command,
+            )
+        ):
+            return (
+                True,
+                (
+                    "The latest launch does not "
+                    "belong to this task step."
+                ),
+            )
+
+        deadline = (
+            time.monotonic()
+            + self.READINESS_TIMEOUT_SECONDS
+        )
+
+        stable_hwnd: (
+            int
+            | None
+        ) = None
+
+        stable_count = 0
+
+        while (
+            time.monotonic()
+            < deadline
+        ):
+            hwnd = (
+                self._foreground_window_handle()
+            )
+
+            ready = (
+                self._foreground_window_matches(
+                    hwnd=hwnd,
+                    observation=(
+                        observation
+                    ),
+                )
+            )
+
+            if (
+                ready
+            ):
+                if (
+                    stable_hwnd
+                    == hwnd
+                ):
+                    stable_count += 1
+
+                else:
+                    stable_hwnd = (
+                        hwnd
+                    )
+
+                    stable_count = 1
+
+                if (
+                    stable_count
+                    >= self.READINESS_STABLE_POLLS
+                ):
+                    self._last_launch = (
+                        None
+                    )
+
+                    return (
+                        True,
+                        (
+                            f"{observation.target} "
+                            "is ready."
+                        ),
+                    )
+
+            else:
+                stable_hwnd = (
+                    None
+                )
+
+                stable_count = 0
+
+            time.sleep(
+                self.READINESS_POLL_INTERVAL_SECONDS
+            )
+
+        self._last_launch = (
+            None
+        )
+
+        return (
+            False,
+            (
+                f"Timed out waiting for "
+                f"{observation.target} "
+                "to become ready."
+            ),
+        )
+
+    # =====================================================
+    # RECORD LAUNCH
+    # =====================================================
+
+    def _record_launch(
+        self,
+        command: str,
+        target: str,
+        kind: str,
+        process_names: frozenset[
+            str
+        ],
+        previous_foreground_hwnd: int,
+    ) -> None:
+        self._last_launch = (
+            LaunchReadiness(
+                command=(
+                    command
+                ),
+
+                target=(
+                    target
+                ),
+
+                kind=(
+                    kind
+                ),
+
+                process_names=(
+                    frozenset(
+                        name.lower()
+                        for name
+                        in process_names
+                        if name
+                    )
+                ),
+
+                previous_foreground_hwnd=(
+                    previous_foreground_hwnd
+                ),
+
+                created_at=(
+                    time.monotonic()
+                ),
+            )
+        )
+
+    # =====================================================
+    # FOREGROUND WINDOW MATCH
+    # =====================================================
+
+    def _foreground_window_matches(
+        self,
+        hwnd: int,
+        observation: LaunchReadiness,
+    ) -> bool:
+        if not (
+            hwnd
+        ):
+            return False
+
+        try:
+            if not (
+                win32gui.IsWindow(
+                    hwnd
+                )
+            ):
+                return False
+
+            if not (
+                win32gui.IsWindowVisible(
+                    hwnd
+                )
+            ):
+                return False
+
+            if not (
+                win32gui.IsWindowEnabled(
+                    hwnd
+                )
+            ):
+                return False
+
+        except Exception:
+            return False
+
+        # =================================================
+        # GENERIC FILE / PATH
+        # =================================================
+        #
+        # We do not know which associated application will
+        # open a generic file, so require a foreground-window
+        # transition.
+        # =================================================
+
+        if (
+            observation.kind
+            == "foreground_change"
+        ):
+            if (
+                observation
+                .previous_foreground_hwnd
+                == 0
+            ):
+                return True
+
+            return (
+                hwnd
+                != observation
+                .previous_foreground_hwnd
+            )
+
+        # =================================================
+        # APPLICATION / WEBSITE
+        # =================================================
+
+        if not (
+            observation.process_names
+        ):
+            return False
+
+        process_name = (
+            self._window_process_name(
+                hwnd
+            )
+        )
+
+        if not (
+            process_name
+        ):
+            return False
+
+        return (
+            process_name.lower()
+            in observation.process_names
+        )
+
+    # =====================================================
+    # WINDOW PROCESS NAME
+    # =====================================================
+
+    def _window_process_name(
+        self,
+        hwnd: int,
+    ) -> str:
+        try:
+            (
+                _,
+                process_id,
+            ) = (
+                win32process
+                .GetWindowThreadProcessId(
+                    hwnd
+                )
+            )
+
+            if not (
+                process_id
+            ):
+                return ""
+
+            process = (
+                psutil.Process(
+                    process_id
+                )
+            )
+
+            return (
+                process.name()
+                or ""
+            )
+
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+            psutil.ZombieProcess,
+            OSError,
+        ):
+            return ""
+
+        except Exception:
+            return ""
+
+    # =====================================================
+    # FOREGROUND WINDOW HANDLE
+    # =====================================================
+
+    def _foreground_window_handle(
+        self,
+    ) -> int:
+        try:
+            return int(
+                win32gui
+                .GetForegroundWindow()
+            )
+
+        except Exception:
+            return 0
+
+    # =====================================================
+    # READINESS PROCESS NAMES
+    # =====================================================
+
+    def _readiness_process_names(
+        self,
+        app_name: str,
+        executable: str,
+    ) -> frozenset[
+        str
+    ]:
+        known = (
+            self.READY_PROCESS_ALIASES
+            .get(
+                app_name
+            )
+        )
+
+        if (
+            known
+        ):
+            return (
+                frozenset(
+                    name.lower()
+                    for name
+                    in known
+                )
+            )
+
+        executable_name = (
+            Path(
+                executable
+            )
+            .name
+            .lower()
+        )
+
+        if not (
+            executable_name
+        ):
+            return (
+                frozenset()
+            )
+
+        return (
+            frozenset(
+                {
+                    executable_name,
+                }
+            )
+        )
+
+    # =====================================================
+    # SAME COMMAND
+    # =====================================================
+
+    def _same_command(
+        self,
+        first: str,
+        second: str,
+    ) -> bool:
+        return (
+            self._normalize_command(
+                first
+            )
+            == self._normalize_command(
+                second
+            )
+        )
+
+    # =====================================================
+    # NORMALIZE COMMAND
+    # =====================================================
+
+    def _normalize_command(
+        self,
+        command: str,
+    ) -> str:
+        return (
+            " ".join(
+                command
+                .strip()
+                .lower()
+                .rstrip(
+                    ".!?"
+                )
+                .split()
+            )
+        )
+
+    # =====================================================
     # EXTRACT TARGET
-    # ==================================================
+    # =====================================================
 
     def _extract_target(
         self,
@@ -400,7 +1113,9 @@ class AppLauncherSkill(
             ):
                 return (
                     command[
-                        len(prefix):
+                        len(
+                            prefix
+                        ):
                     ]
                     .strip()
                     .strip(
@@ -410,9 +1125,9 @@ class AppLauncherSkill(
 
         return ""
 
-    # ==================================================
+    # =====================================================
     # CLOSE APP
-    # ==================================================
+    # =====================================================
 
     def _close_app(
         self,
@@ -440,7 +1155,9 @@ class AppLauncherSkill(
             )
         )
 
-        if not allowed_names:
+        if not (
+            allowed_names
+        ):
             return (
                 f"I don't know how to safely "
                 f"close {target} yet."
@@ -493,9 +1210,9 @@ class AppLauncherSkill(
             f"Closing {target}."
         )
 
-    # ==================================================
+    # =====================================================
     # EXISTING PATH
-    # ==================================================
+    # =====================================================
 
     def _resolve_existing_path(
         self,
@@ -509,26 +1226,36 @@ class AppLauncherSkill(
             )
         )
 
-        if not candidate:
+        if not (
+            candidate
+        ):
             return None
 
-        # Avoid interpreting normal app names such as
-        # "chrome" as arbitrary paths.
+        # Avoid interpreting ordinary application names as
+        # arbitrary paths.
         looks_like_path = (
-            "\\" in candidate
-            or "/" in candidate
+            "\\"
+            in candidate
+            or "/"
+            in candidate
             or candidate.startswith(
                 "."
             )
             or (
-                len(candidate)
+                len(
+                    candidate
+                )
                 >= 2
-                and candidate[1]
+                and candidate[
+                    1
+                ]
                 == ":"
             )
         )
 
-        if not looks_like_path:
+        if not (
+            looks_like_path
+        ):
             return None
 
         try:
@@ -539,8 +1266,8 @@ class AppLauncherSkill(
                 .expanduser()
             )
 
-            if (
-                not path.is_absolute()
+            if not (
+                path.is_absolute()
             ):
                 path = (
                     Path.cwd()
@@ -563,13 +1290,15 @@ class AppLauncherSkill(
         if (
             path.exists()
         ):
-            return path
+            return (
+                path
+            )
 
         return None
 
-    # ==================================================
+    # =====================================================
     # RESOLVE APPLICATION
-    # ==================================================
+    # =====================================================
 
     def _resolve_app(
         self,
@@ -582,7 +1311,9 @@ class AppLauncherSkill(
             )
         )
 
-        if candidates:
+        if (
+            candidates
+        ):
             for candidate in (
                 candidates
             ):
@@ -592,12 +1323,16 @@ class AppLauncherSkill(
                     )
                 )
 
-                if found:
-                    return found
+                if (
+                    found
+                ):
+                    return (
+                        found
+                    )
 
-        # ==============================================
+        # =================================================
         # VS CODE FALLBACK
-        # ==============================================
+        # =================================================
 
         if app_name in {
             "vs code",
@@ -629,19 +1364,26 @@ class AppLauncherSkill(
                 ),
             ]
 
-            for path in paths:
+            for path in (
+                paths
+            ):
                 if (
                     path.exists()
                 ):
-                    return str(
-                        path
+                    return (
+                        str(
+                            path
+                        )
                     )
 
-        # ==============================================
+        # =================================================
         # CHROME FALLBACK
-        # ==============================================
+        # =================================================
 
-        if app_name == "chrome":
+        if (
+            app_name
+            == "chrome"
+        ):
             paths = [
                 (
                     Path(
@@ -683,19 +1425,26 @@ class AppLauncherSkill(
                 ),
             ]
 
-            for path in paths:
+            for path in (
+                paths
+            ):
                 if (
                     path.exists()
                 ):
-                    return str(
-                        path
+                    return (
+                        str(
+                            path
+                        )
                     )
 
-        # ==============================================
+        # =================================================
         # SPOTIFY FALLBACK
-        # ==============================================
+        # =================================================
 
-        if app_name == "spotify":
+        if (
+            app_name
+            == "spotify"
+        ):
             path = (
                 Path(
                     os.getenv(
@@ -710,15 +1459,17 @@ class AppLauncherSkill(
             if (
                 path.exists()
             ):
-                return str(
-                    path
+                return (
+                    str(
+                        path
+                    )
                 )
 
         return None
 
-    # ==================================================
+    # =====================================================
     # COMMON FOLDER
-    # ==================================================
+    # =====================================================
 
     def _get_folder(
         self,
@@ -780,9 +1531,12 @@ class AppLauncherSkill(
         )
 
         if (
-            folder is not None
+            folder
+            is not None
             and folder.exists()
         ):
-            return folder
+            return (
+                folder
+            )
 
         return None

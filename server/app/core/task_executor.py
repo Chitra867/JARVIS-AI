@@ -1,3 +1,5 @@
+import inspect
+
 from dataclasses import (
     dataclass,
 )
@@ -164,7 +166,10 @@ class TaskExecutor:
         # EXECUTE IN ORDER
         # =================================================
 
-        for step in (
+        for (
+            step_position,
+            step,
+        ) in enumerate(
             plan.steps
         ):
             skill = (
@@ -550,6 +555,96 @@ class TaskExecutor:
                 )
 
             # =================================================
+            # WAIT FOR STEP READINESS
+            # =================================================
+            #
+            # Some deterministic skills, such as
+            # AppLauncherSkill, may start asynchronous OS work.
+            #
+            # Only wait when another task step follows. A
+            # standalone command such as "open notepad" should
+            # return immediately.
+            # =================================================
+
+            has_following_step = (
+                step_position
+                < (
+                    len(
+                        plan.steps
+                    )
+                    - 1
+                )
+            )
+
+            if (
+                has_following_step
+            ):
+                (
+                    readiness_ok,
+                    readiness_reason,
+                ) = (
+                    self._wait_for_step_readiness(
+                        skill=skill,
+                        command=(
+                            step.command
+                        ),
+                    )
+                )
+
+                if not (
+                    readiness_ok
+                ):
+                    failure_response = (
+                        readiness_reason
+                        .strip()
+                    )
+
+                    if not (
+                        failure_response
+                    ):
+                        failure_response = (
+                            "The step did not become "
+                            "ready for the next action."
+                        )
+
+                    executed_steps.append(
+                        StepExecutionResult(
+                            index=(
+                                step.index
+                            ),
+                            command=(
+                                step.command
+                            ),
+                            handler=(
+                                actual_handler
+                            ),
+                            status=(
+                                ExecutionStatus
+                                .FAILED
+                            ),
+                            response=(
+                                failure_response
+                            ),
+                        )
+                    )
+
+                    return (
+                        self._failure_result(
+                            plan=plan,
+                            executed_steps=(
+                                executed_steps
+                            ),
+                            runtime_context=(
+                                runtime_context
+                            ),
+                            stopped_at=(
+                                step.index
+                            ),
+                            blocked=False,
+                        )
+                    )
+
+            # =================================================
             # RUNTIME OUTPUT
             # =================================================
 
@@ -883,6 +978,164 @@ class TaskExecutor:
                 )
             ),
             None,
+        )
+
+    # =====================================================
+    # WAIT FOR STEP READINESS
+    # =====================================================
+
+    def _wait_for_step_readiness(
+        self,
+        skill: object,
+        command: str,
+    ) -> tuple[
+        bool,
+        str,
+    ]:
+        # IMPORTANT:
+        #
+        # Do not use a normal getattr() as the first check.
+        #
+        # MagicMock, proxies, and objects implementing
+        # __getattr__ can fabricate a callable
+        # "wait_until_ready" attribute even when the skill
+        # does not actually define a readiness hook.
+        #
+        # Static inspection tells us whether the attribute
+        # genuinely exists on the object/class.
+        try:
+            static_waiter = (
+                inspect.getattr_static(
+                    skill,
+                    "wait_until_ready",
+                    None,
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Step readiness inspection failed "
+                    f"for {type(skill).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                False,
+                (
+                    "The step readiness hook "
+                    "could not be inspected."
+                ),
+            )
+
+        # Skills without an asynchronous readiness hook are
+        # immediately ready for the following step.
+        if (
+            static_waiter
+            is None
+        ):
+            return (
+                True,
+                "",
+            )
+
+        waiter = (
+            getattr(
+                skill,
+                "wait_until_ready",
+                None,
+            )
+        )
+
+        # If the skill explicitly exposes the attribute but
+        # it is not callable, fail closed instead of silently
+        # ignoring a malformed readiness contract.
+        if not callable(
+            waiter
+        ):
+            return (
+                False,
+                (
+                    "The step readiness hook "
+                    "is not callable."
+                ),
+            )
+
+        try:
+            result = (
+                waiter(
+                    command
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Step readiness check failed "
+                    f"for {type(skill).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                False,
+                (
+                    "The step readiness check "
+                    "failed."
+                ),
+            )
+
+        if (
+            not isinstance(
+                result,
+                tuple,
+            )
+            or len(
+                result
+            )
+            != 2
+        ):
+            return (
+                False,
+                (
+                    "The step readiness check "
+                    "returned an invalid result."
+                ),
+            )
+
+        ready = (
+            result[
+                0
+            ]
+        )
+
+        reason = (
+            str(
+                result[
+                    1
+                ]
+            )
+            .strip()
+        )
+
+        if not isinstance(
+            ready,
+            bool,
+        ):
+            return (
+                False,
+                (
+                    "The step readiness check "
+                    "returned an invalid status."
+                ),
+            )
+
+        return (
+            ready,
+            reason,
         )
 
     # =====================================================
