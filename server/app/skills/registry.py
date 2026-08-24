@@ -18,6 +18,10 @@ from app.skills.file_skill import (
     FileSkill,
 )
 
+from app.skills.input_control_skill import (
+    InputControlSkill,
+)
+
 from app.skills.media_skill import (
     MediaSkill,
 )
@@ -42,6 +46,10 @@ from app.skills.power_control_skill import (
     PowerControlSkill,
 )
 
+from app.skills.screen_vision_skill import (
+    ScreenVisionSkill,
+)
+
 from app.skills.screenshot_skill import (
     ScreenshotSkill,
 )
@@ -58,17 +66,14 @@ from app.skills.time_skill import (
     TimeSkill,
 )
 
+from app.skills.visual_target_skill import (
+    VisualTargetSkill,
+)
+
 from app.skills.windows_control_skill import (
     WindowsControlSkill,
 )
 
-from app.skills.screen_vision_skill import (
-    ScreenVisionSkill,
-)
-
-from app.skills.input_control_skill import (
-    InputControlSkill,
-)
 
 class SkillRegistry:
     def __init__(
@@ -80,6 +85,11 @@ class SkillRegistry:
             TimeSkill(),
 
             SystemSkill(),
+
+            # Visual target detection must appear
+            # before SearchSkill because commands
+            # can begin with "find".
+            VisualTargetSkill(),
 
             SearchSkill(),
 
@@ -97,15 +107,11 @@ class SkillRegistry:
 
             ScreenshotSkill(),
 
-            ScreenshotSkill(),
-
             ScreenVisionSkill(),
 
             AppLauncherSkill(),
 
             InputControlSkill(),
-
-            AppLauncherSkill(),
 
             MemoryControlSkill(),
 

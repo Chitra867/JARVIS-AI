@@ -1,14 +1,7 @@
-import base64
-
-from io import (
-    BytesIO,
-)
-
 import httpx
 
-from PIL import (
-    Image,
-    ImageGrab,
+from app.core.screen_capture import (
+    screen_capture_service,
 )
 
 from app.skills.base import (
@@ -27,8 +20,6 @@ class ScreenVisionSkill(
     MODEL = (
         "qwen2.5vl:3b"
     )
-
-    MAX_IMAGE_DIMENSION = 1600
 
     COMMANDS = {
         "what is on my screen",
@@ -78,8 +69,9 @@ class ScreenVisionSkill(
         del command
 
         try:
-            image_data = (
-                self._capture_screen()
+            capture = (
+                screen_capture_service
+                .capture()
             )
 
         except Exception as error:
@@ -99,7 +91,7 @@ class ScreenVisionSkill(
         try:
             return (
                 self._analyze_screen(
-                    image_data
+                    capture.image_data
                 )
             )
 
@@ -139,111 +131,7 @@ class ScreenVisionSkill(
             )
 
     # ==================================================
-    # CAPTURE SCREEN
-    # ==================================================
-
-    def _capture_screen(
-        self,
-    ) -> str:
-        image = (
-            ImageGrab.grab(
-                all_screens=True,
-            )
-        )
-
-        image = (
-            self._resize_image(
-                image
-            )
-        )
-
-        # JPEG is much smaller than sending a full
-        # desktop PNG to the vision model.
-        if image.mode != "RGB":
-            image = (
-                image.convert(
-                    "RGB"
-                )
-            )
-
-        buffer = (
-            BytesIO()
-        )
-
-        image.save(
-            buffer,
-            format="JPEG",
-            quality=85,
-            optimize=True,
-        )
-
-        encoded = (
-            base64.b64encode(
-                buffer.getvalue()
-            )
-            .decode(
-                "ascii"
-            )
-        )
-
-        return encoded
-
-    # ==================================================
-    # RESIZE
-    # ==================================================
-
-    def _resize_image(
-        self,
-        image: Image.Image,
-    ) -> Image.Image:
-        width, height = (
-            image.size
-        )
-
-        largest = max(
-            width,
-            height,
-        )
-
-        if (
-            largest
-            <= self.MAX_IMAGE_DIMENSION
-        ):
-            return image
-
-        scale = (
-            self.MAX_IMAGE_DIMENSION
-            / largest
-        )
-
-        new_width = max(
-            1,
-            int(
-                width
-                * scale
-            ),
-        )
-
-        new_height = max(
-            1,
-            int(
-                height
-                * scale
-            ),
-        )
-
-        return (
-            image.resize(
-                (
-                    new_width,
-                    new_height,
-                ),
-                Image.Resampling.LANCZOS,
-            )
-        )
-
-    # ==================================================
-    # ANALYZE SCREEN
+    # ANALYZE
     # ==================================================
 
     def _analyze_screen(
