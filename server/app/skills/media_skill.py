@@ -1,8 +1,6 @@
 import ctypes
 import re
 
-import pywhatkit
-
 from app.skills.base import (
     Skill,
 )
@@ -99,12 +97,14 @@ class MediaSkill(
         ):
             return True
 
-        return normalized.startswith(
-            (
-                "play ",
-                "play music",
-                "play song",
-                "play youtube",
+        return (
+            normalized.startswith(
+                (
+                    "play ",
+                    "play music",
+                    "play song",
+                    "play youtube",
+                )
             )
         )
 
@@ -140,9 +140,24 @@ class MediaSkill(
             key_code
             is not None
         ):
-            self._press_media_key(
-                key_code
-            )
+            try:
+                self._press_media_key(
+                    key_code
+                )
+
+            except Exception as error:
+                print(
+                    (
+                        "Media control error: "
+                        f"{type(error).__name__}: "
+                        f"{error}"
+                    )
+                )
+
+                return (
+                    "I couldn't control "
+                    "media playback."
+                )
 
             if (
                 key_code
@@ -182,9 +197,52 @@ class MediaSkill(
             )
         )
 
-        if not query:
+        if not (
+            query
+        ):
             query = (
                 "music"
+            )
+
+        return (
+            self._play_youtube(
+                query
+            )
+        )
+
+    # ==================================================
+    # PLAY YOUTUBE
+    # ==================================================
+
+    def _play_youtube(
+        self,
+        query: str,
+    ) -> str:
+        """
+        Import pywhatkit only when a YouTube action is
+        actually requested.
+
+        pywhatkit performs an internet connectivity check
+        during import. Keeping the import here prevents an
+        offline connection failure from breaking JARVIS
+        startup, skill registration, or pytest collection.
+        """
+
+        try:
+            import pywhatkit
+
+        except Exception as error:
+            print(
+                (
+                    "YouTube module unavailable: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                f"I couldn't play "
+                f"{query} on YouTube."
             )
 
         try:
@@ -193,16 +251,12 @@ class MediaSkill(
                 open_video=True,
             )
 
-            return (
-                f"Playing {query} "
-                f"on YouTube."
-            )
-
         except Exception as error:
             print(
                 (
-                    "YouTube playback "
-                    f"error: {error}"
+                    "YouTube playback error: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
                 )
             )
 
@@ -210,6 +264,11 @@ class MediaSkill(
                 f"I couldn't play "
                 f"{query} on YouTube."
             )
+
+        return (
+            f"Playing {query} "
+            f"on YouTube."
+        )
 
     # ==================================================
     # MEDIA KEY
@@ -219,14 +278,20 @@ class MediaSkill(
         self,
         key_code: int,
     ) -> None:
-        ctypes.windll.user32.keybd_event(
+        user32 = (
+            ctypes
+            .windll
+            .user32
+        )
+
+        user32.keybd_event(
             key_code,
             0,
             0,
             0,
         )
 
-        ctypes.windll.user32.keybd_event(
+        user32.keybd_event(
             key_code,
             0,
             self.KEYEVENTF_KEYUP,
@@ -288,4 +353,6 @@ class MediaSkill(
                 "music"
             )
 
-        return text
+        return (
+            text
+        )
