@@ -220,6 +220,52 @@ class RoutingRegressionTests(
                 )
 
     # ==================================================
+    # UI CLICK CONFIRMATION
+    # ==================================================
+
+    def test_ui_click_confirmation_routes_to_ui_automation(
+        self,
+    ) -> None:
+        commands = (
+            "confirm click abc123",
+            "confirm ui click abc123",
+        )
+
+        for command in (
+            commands
+        ):
+            with self.subTest(
+                command=command
+            ):
+                self._assert_routes_to(
+                    command,
+                    UIAutomationClickSkill,
+                )
+
+    # ==================================================
+    # UI CLICK CANCELLATION
+    # ==================================================
+
+    def test_ui_click_cancel_routes_to_ui_automation(
+        self,
+    ) -> None:
+        commands = (
+            "cancel click",
+            "cancel ui click",
+        )
+
+        for command in (
+            commands
+        ):
+            with self.subTest(
+                command=command
+            ):
+                self._assert_routes_to(
+                    command,
+                    UIAutomationClickSkill,
+                )
+
+    # ==================================================
     # BASIC MOUSE ACTION
     # ==================================================
 

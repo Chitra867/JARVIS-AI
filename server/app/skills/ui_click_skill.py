@@ -1,7 +1,13 @@
 import re
+import secrets
 import time
 
+from dataclasses import (
+    dataclass,
+)
+
 import pyautogui
+import win32gui
 
 from app.core.ui_automation import (
     UIAutomationResolution,
@@ -14,16 +20,104 @@ from app.skills.base import (
 )
 
 
+# ======================================================
+# PENDING SENSITIVE CLICK
+# ======================================================
+
+
+@dataclass(
+    frozen=True
+)
+class PendingUIClick:
+    query: str
+
+    original_target: UIAutomationTarget
+
+    confirmation_token: str
+
+    created_at: float
+
+    foreground_hwnd: int
+
+
+# ======================================================
+# UI AUTOMATION CLICK SKILL
+# ======================================================
+
+
 class UIAutomationClickSkill(
     Skill
 ):
-    # Small delay between the initial resolution and
+    # Small delay between the first resolution and the
     # final pre-click verification.
     REVALIDATION_DELAY_SECONDS = 0.05
 
-    # Small movement tolerance is allowed in case the
-    # application shifts a control by a few pixels.
+    # Maximum allowed movement of a target between two
+    # immediate UIA resolutions.
     MAX_POSITION_DRIFT = 8
+
+    # Sensitive confirmations automatically expire.
+    CONFIRMATION_TTL_SECONDS = 30.0
+
+    # ==================================================
+    # SENSITIVE / CONSEQUENTIAL ACTION TERMS
+    # ==================================================
+
+    SENSITIVE_TERMS = (
+        # Destructive data actions
+        "delete",
+        "remove",
+        "erase",
+        "format",
+        "reset",
+        "factory reset",
+        "overwrite",
+        "replace",
+
+        # Software / system changes
+        "install",
+        "uninstall",
+        "disable",
+        "shutdown",
+        "restart",
+        "terminate",
+        "kill",
+
+        # Financial actions
+        "purchase",
+        "buy",
+        "pay",
+        "checkout",
+        "place order",
+
+        # External communication
+        "send",
+        "submit",
+        "publish",
+        "post",
+        "upload",
+        "share",
+
+        # Authorization
+        "confirm",
+        "approve",
+        "authorize",
+        "allow",
+        "grant",
+        "accept",
+        "yes",
+
+        # Session/window termination
+        "close",
+        "exit",
+        "quit",
+        "sign out",
+        "log out",
+    )
+
+    # ==================================================
+    # COMMAND PATTERNS
+    # ==================================================
 
     CLICK_PATTERN = re.compile(
         (
@@ -35,6 +129,39 @@ class UIAutomationClickSkill(
         flags=re.IGNORECASE,
     )
 
+    CONFIRM_PATTERN = re.compile(
+        (
+            r"^confirm\s+"
+            r"(?:ui\s+)?"
+            r"click\s+"
+            r"([a-f0-9]{6})"
+            r"\s*[.!?]*$"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    CANCEL_PATTERN = re.compile(
+        (
+            r"^cancel\s+"
+            r"(?:ui\s+)?"
+            r"click"
+            r"\s*[.!?]*$"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    # ==================================================
+    # INIT
+    # ==================================================
+
+    def __init__(
+        self,
+    ) -> None:
+        self._pending_confirmation: (
+            PendingUIClick
+            | None
+        ) = None
+
     # ==================================================
     # ROUTING
     # ==================================================
@@ -43,9 +170,32 @@ class UIAutomationClickSkill(
         self,
         command: str,
     ) -> bool:
+        clean_command = (
+            command
+            .strip()
+        )
+
+        if (
+            self.CONFIRM_PATTERN
+            .match(
+                clean_command
+            )
+            is not None
+        ):
+            return True
+
+        if (
+            self.CANCEL_PATTERN
+            .match(
+                clean_command
+            )
+            is not None
+        ):
+            return True
+
         return (
             self._extract_target(
-                command
+                clean_command
             )
             is not None
         )
@@ -58,9 +208,57 @@ class UIAutomationClickSkill(
         self,
         command: str,
     ) -> str:
+        clean_command = (
+            command
+            .strip()
+        )
+
+        # ==============================================
+        # CONFIRM PENDING SENSITIVE CLICK
+        # ==============================================
+
+        confirmation_match = (
+            self.CONFIRM_PATTERN
+            .match(
+                clean_command
+            )
+        )
+
+        if (
+            confirmation_match
+            is not None
+        ):
+            return (
+                self._handle_confirmation(
+                    confirmation_match
+                    .group(
+                        1
+                    )
+                )
+            )
+
+        # ==============================================
+        # CANCEL PENDING CLICK
+        # ==============================================
+
+        if (
+            self.CANCEL_PATTERN
+            .match(
+                clean_command
+            )
+            is not None
+        ):
+            return (
+                self._handle_cancel()
+            )
+
+        # ==============================================
+        # NORMAL TARGETED CLICK
+        # ==============================================
+
         target_query = (
             self._extract_target(
-                command
+                clean_command
             )
         )
 
@@ -73,26 +271,92 @@ class UIAutomationClickSkill(
                 "screen control to click."
             )
 
+        return (
+            self._handle_click_request(
+                target_query
+            )
+        )
+
+    # ==================================================
+    # HANDLE CLICK REQUEST
+    # ==================================================
+
+    def _handle_click_request(
+        self,
+        target_query: str,
+    ) -> str:
         target_query = (
             self._clean_target_phrase(
                 target_query
             )
         )
 
+        # A new targeted click invalidates any previous
+        # pending sensitive confirmation.
+        self._pending_confirmation = (
+            None
+        )
+
         # ==============================================
-        # RESOLUTION 1
+        # FOREGROUND WINDOW SNAPSHOT
         # ==============================================
 
-        first_resolution = (
-            self._resolve(
-                target_query
-            )
+        foreground_hwnd = (
+            self._foreground_window_handle()
         )
+
+        if not (
+            foreground_hwnd
+        ):
+            return (
+                "I couldn't determine the active "
+                "window. "
+                "No click was performed."
+            )
+
+        # ==============================================
+        # INITIAL TARGET RESOLUTION
+        # ==============================================
+
+        try:
+            resolution = (
+                self._resolve(
+                    target_query
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "UI click target resolution "
+                    "failed: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                "Windows UI Automation could not "
+                "safely resolve that target. "
+                "No click was performed."
+            )
+
+        # Foreground window must not change while the
+        # first lookup is being performed.
+        if (
+            self._foreground_window_handle()
+            != foreground_hwnd
+        ):
+            return (
+                "The active window changed while "
+                "I was locating the target. "
+                "No click was performed."
+            )
 
         blocked_response = (
             self._resolution_failure_message(
-                target_query,
-                first_resolution,
+                query=target_query,
+                resolution=resolution,
             )
         )
 
@@ -104,12 +368,12 @@ class UIAutomationClickSkill(
                 blocked_response
             )
 
-        first_target = (
-            first_resolution.target
+        target = (
+            resolution.target
         )
 
         if (
-            first_target
+            target
             is None
         ):
             return (
@@ -120,39 +384,219 @@ class UIAutomationClickSkill(
 
         if not (
             self._target_is_actionable(
-                first_target
+                target
             )
         ):
             return (
-                f"I found '{first_target.name}', "
+                f"I found '{target.name}', "
                 "but the control is not currently "
                 "safe to click. "
                 "No click was performed."
             )
 
         # ==============================================
-        # REVALIDATION
-        # ==============================================
-        #
-        # The UI may change between detection and action.
-        # Resolve the target again immediately before
-        # clicking.
+        # SENSITIVE TARGET
         # ==============================================
 
-        time.sleep(
-            self.REVALIDATION_DELAY_SECONDS
-        )
+        if (
+            self._requires_confirmation(
+                query=target_query,
+                target=target,
+            )
+        ):
+            confirmation_token = (
+                secrets.token_hex(
+                    3
+                )
+            )
 
-        second_resolution = (
-            self._resolve(
-                target_query
+            self._pending_confirmation = (
+                PendingUIClick(
+                    query=(
+                        target_query
+                    ),
+
+                    original_target=(
+                        target
+                    ),
+
+                    confirmation_token=(
+                        confirmation_token
+                    ),
+
+                    created_at=(
+                        time.monotonic()
+                    ),
+
+                    foreground_hwnd=(
+                        foreground_hwnd
+                    ),
+                )
+            )
+
+            return (
+                f"'{target.name}' may perform a "
+                "sensitive or destructive action. "
+                "No click was performed. "
+                "To proceed, send exactly: "
+                f"confirm click "
+                f"{confirmation_token}"
+            )
+
+        # ==============================================
+        # ORDINARY GUARDED CLICK
+        # ==============================================
+
+        return (
+            self._revalidate_and_click(
+                query=target_query,
+                first_target=target,
+                expected_hwnd=(
+                    foreground_hwnd
+                ),
             )
         )
 
+    # ==================================================
+    # HANDLE CONFIRMATION
+    # ==================================================
+
+    def _handle_confirmation(
+        self,
+        supplied_token: str,
+    ) -> str:
+        pending = (
+            self._pending_confirmation
+        )
+
+        if (
+            pending
+            is None
+        ):
+            return (
+                "There is no pending sensitive "
+                "UI click to confirm."
+            )
+
+        # ==============================================
+        # EXPIRATION
+        # ==============================================
+
+        age = (
+            time.monotonic()
+            - pending.created_at
+        )
+
+        if (
+            age
+            > self.CONFIRMATION_TTL_SECONDS
+        ):
+            self._pending_confirmation = (
+                None
+            )
+
+            return (
+                "The UI click confirmation "
+                "expired. "
+                "Please request the action again."
+            )
+
+        # ==============================================
+        # TOKEN CHECK
+        # ==============================================
+
+        if not (
+            secrets.compare_digest(
+                supplied_token.lower(),
+                pending
+                .confirmation_token
+                .lower(),
+            )
+        ):
+            # Invalid confirmation destroys the pending
+            # token so repeated guessing cannot occur.
+            self._pending_confirmation = (
+                None
+            )
+
+            return (
+                "That confirmation token does "
+                "not match the pending UI action. "
+                "The pending confirmation was "
+                "cleared. "
+                "No click was performed."
+            )
+
+        # ==============================================
+        # FOREGROUND WINDOW CHECK
+        # ==============================================
+
+        if (
+            self._foreground_window_handle()
+            != pending.foreground_hwnd
+        ):
+            self._pending_confirmation = (
+                None
+            )
+
+            return (
+                "The active window changed after "
+                "the sensitive action was requested. "
+                "Please request the action again. "
+                "No click was performed."
+            )
+
+        # Consume the valid token BEFORE attempting the
+        # action. The token can therefore never be
+        # replayed.
+        self._pending_confirmation = (
+            None
+        )
+
+        # ==============================================
+        # RE-RESOLVE AFTER CONFIRMATION
+        # ==============================================
+
+        try:
+            current_resolution = (
+                self._resolve(
+                    pending.query
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Confirmed UI target resolution "
+                    "failed: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                "The target could not be safely "
+                "resolved again. "
+                "No click was performed."
+            )
+
+        if (
+            self._foreground_window_handle()
+            != pending.foreground_hwnd
+        ):
+            return (
+                "The active window changed while "
+                "the confirmed target was being "
+                "verified. "
+                "No click was performed."
+            )
+
         blocked_response = (
             self._resolution_failure_message(
-                target_query,
-                second_resolution,
+                query=pending.query,
+                resolution=(
+                    current_resolution
+                ),
             )
         )
 
@@ -161,8 +605,192 @@ class UIAutomationClickSkill(
             is not None
         ):
             return (
-                "The screen changed before I could "
-                "safely click the target. "
+                "The confirmed target could not "
+                "be safely resolved again. "
+                f"{blocked_response}"
+            )
+
+        current_target = (
+            current_resolution.target
+        )
+
+        if (
+            current_target
+            is None
+        ):
+            return (
+                "The target disappeared before "
+                "the confirmed action could run. "
+                "No click was performed."
+            )
+
+        if not (
+            self._target_is_actionable(
+                current_target
+            )
+        ):
+            return (
+                f"'{current_target.name}' is no "
+                "longer visible or enabled. "
+                "No click was performed."
+            )
+
+        # For sensitive actions, even after explicit
+        # confirmation, require the control to remain the
+        # same target at essentially the same position.
+        #
+        # If it moved significantly, fail closed and ask
+        # the user to request the action again.
+        if not (
+            self._same_target(
+                pending.original_target,
+                current_target,
+            )
+        ):
+            return (
+                "The confirmed control changed "
+                "identity or position after the "
+                "request. "
+                "Please request the action again. "
+                "No click was performed."
+            )
+
+        # ==============================================
+        # FINAL IMMEDIATE REVALIDATION
+        # ==============================================
+
+        return (
+            self._revalidate_and_click(
+                query=pending.query,
+                first_target=(
+                    current_target
+                ),
+                expected_hwnd=(
+                    pending
+                    .foreground_hwnd
+                ),
+            )
+        )
+
+    # ==================================================
+    # CANCEL
+    # ==================================================
+
+    def _handle_cancel(
+        self,
+    ) -> str:
+        if (
+            self._pending_confirmation
+            is None
+        ):
+            return (
+                "There is no pending UI click "
+                "to cancel."
+            )
+
+        self._pending_confirmation = (
+            None
+        )
+
+        return (
+            "Pending UI click cancelled."
+        )
+
+    # ==================================================
+    # REVALIDATE AND CLICK
+    # ==================================================
+
+    def _revalidate_and_click(
+        self,
+        query: str,
+        first_target: UIAutomationTarget,
+        expected_hwnd: int,
+    ) -> str:
+        # ==============================================
+        # WINDOW CHECK BEFORE DELAY
+        # ==============================================
+
+        if (
+            self._foreground_window_handle()
+            != expected_hwnd
+        ):
+            return (
+                "The active window changed before "
+                "the target could be clicked. "
+                "No click was performed."
+            )
+
+        time.sleep(
+            self.REVALIDATION_DELAY_SECONDS
+        )
+
+        # ==============================================
+        # WINDOW CHECK BEFORE SECOND RESOLUTION
+        # ==============================================
+
+        if (
+            self._foreground_window_handle()
+            != expected_hwnd
+        ):
+            return (
+                "The active window changed before "
+                "the target could be revalidated. "
+                "No click was performed."
+            )
+
+        try:
+            second_resolution = (
+                self._resolve(
+                    query
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Final UI click resolution "
+                    "failed: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                "I couldn't safely revalidate "
+                "the target. "
+                "No click was performed."
+            )
+
+        # ==============================================
+        # WINDOW CHECK AFTER SECOND RESOLUTION
+        # ==============================================
+
+        if (
+            self._foreground_window_handle()
+            != expected_hwnd
+        ):
+            return (
+                "The active window changed while "
+                "the target was being revalidated. "
+                "No click was performed."
+            )
+
+        blocked_response = (
+            self._resolution_failure_message(
+                query=query,
+                resolution=(
+                    second_resolution
+                ),
+            )
+        )
+
+        if (
+            blocked_response
+            is not None
+        ):
+            return (
+                "The screen changed before I "
+                "could safely click the target. "
                 f"{blocked_response}"
             )
 
@@ -186,13 +814,13 @@ class UIAutomationClickSkill(
             )
         ):
             return (
-                f"'{second_target.name}' is no longer "
-                "visible or enabled. "
+                f"'{second_target.name}' is no "
+                "longer visible or enabled. "
                 "No click was performed."
             )
 
         # ==============================================
-        # TARGET STABILITY
+        # TARGET IDENTITY + POSITION STABILITY
         # ==============================================
 
         if not (
@@ -209,7 +837,7 @@ class UIAutomationClickSkill(
             )
 
         # ==============================================
-        # FINAL COORDINATE VALIDATION
+        # RECTANGLE VALIDATION
         # ==============================================
 
         if not (
@@ -218,8 +846,8 @@ class UIAutomationClickSkill(
             )
         ):
             return (
-                "The resolved control has an invalid "
-                "screen rectangle. "
+                "The resolved control has an "
+                "invalid screen rectangle. "
                 "No click was performed."
             )
 
@@ -232,12 +860,31 @@ class UIAutomationClickSkill(
         )
 
         # ==============================================
+        # FINAL WINDOW CHECK
+        # ==============================================
+
+        if (
+            self._foreground_window_handle()
+            != expected_hwnd
+        ):
+            return (
+                "The active window changed at the "
+                "final safety check. "
+                "No click was performed."
+            )
+
+        # ==============================================
         # GUARDED CLICK
         # ==============================================
 
         try:
-            pyautogui.FAILSAFE = True
-            pyautogui.PAUSE = 0.05
+            pyautogui.FAILSAFE = (
+                True
+            )
+
+            pyautogui.PAUSE = (
+                0.05
+            )
 
             pyautogui.click(
                 x=click_x,
@@ -291,7 +938,7 @@ class UIAutomationClickSkill(
         )
 
     # ==================================================
-    # FAILURE MESSAGE
+    # RESOLUTION FAILURE MESSAGE
     # ==================================================
 
     def _resolution_failure_message(
@@ -359,8 +1006,8 @@ class UIAutomationClickSkill(
             == "not_found"
         ):
             return (
-                f"I couldn't find a unique visible "
-                f"UI Automation target for "
+                "I couldn't find a unique visible "
+                "UI Automation target for "
                 f"'{query}'. "
                 "No click was performed."
             )
@@ -370,13 +1017,85 @@ class UIAutomationClickSkill(
         # ==============================================
 
         return (
-            "Windows UI Automation could not safely "
-            "resolve that target. "
+            "Windows UI Automation could not "
+            "safely resolve that target. "
             "No click was performed."
         )
 
     # ==================================================
-    # ACTIONABLE
+    # RISK CLASSIFICATION
+    # ==================================================
+
+    def _requires_confirmation(
+        self,
+        query: str,
+        target: UIAutomationTarget,
+    ) -> bool:
+        combined = (
+            self._normalize(
+                (
+                    f"{query} "
+                    f"{target.name}"
+                )
+            )
+        )
+
+        for term in (
+            self.SENSITIVE_TERMS
+        ):
+            if (
+                self._contains_phrase(
+                    text=combined,
+                    phrase=term,
+                )
+            ):
+                return True
+
+        return False
+
+    # ==================================================
+    # PHRASE MATCHING
+    # ==================================================
+
+    def _contains_phrase(
+        self,
+        text: str,
+        phrase: str,
+    ) -> bool:
+        normalized_phrase = (
+            self._normalize(
+                phrase
+            )
+        )
+
+        if not (
+            normalized_phrase
+        ):
+            return False
+
+        escaped = (
+            re.escape(
+                normalized_phrase
+            )
+        )
+
+        pattern = (
+            rf"(?<!\w)"
+            rf"{escaped}"
+            rf"(?!\w)"
+        )
+
+        return (
+            re.search(
+                pattern,
+                text,
+                flags=re.IGNORECASE,
+            )
+            is not None
+        )
+
+    # ==================================================
+    # ACTIONABLE TARGET
     # ==================================================
 
     def _target_is_actionable(
@@ -436,10 +1155,10 @@ class UIAutomationClickSkill(
         return True
 
     # ==================================================
-    # SAME TARGET
+    # SAME IDENTITY
     # ==================================================
 
-    def _same_target(
+    def _same_identity(
         self,
         first: UIAutomationTarget,
         second: UIAutomationTarget,
@@ -461,8 +1180,8 @@ class UIAutomationClickSkill(
         ):
             return False
 
-        # If both controls provide automation IDs,
-        # they must agree.
+        # If both UIA elements expose automation IDs,
+        # require those IDs to remain identical.
         if (
             first.automation_id
             and
@@ -470,6 +1189,25 @@ class UIAutomationClickSkill(
             and
             first.automation_id
             != second.automation_id
+        ):
+            return False
+
+        return True
+
+    # ==================================================
+    # SAME TARGET + POSITION
+    # ==================================================
+
+    def _same_target(
+        self,
+        first: UIAutomationTarget,
+        second: UIAutomationTarget,
+    ) -> bool:
+        if not (
+            self._same_identity(
+                first,
+                second,
+            )
         ):
             return False
 
@@ -498,6 +1236,22 @@ class UIAutomationClickSkill(
         return True
 
     # ==================================================
+    # FOREGROUND WINDOW
+    # ==================================================
+
+    def _foreground_window_handle(
+        self,
+    ) -> int:
+        try:
+            return int(
+                win32gui
+                .GetForegroundWindow()
+            )
+
+        except Exception:
+            return 0
+
+    # ==================================================
     # TARGET EXTRACTION
     # ==================================================
 
@@ -519,7 +1273,8 @@ class UIAutomationClickSkill(
             return None
 
         target = (
-            match.group(
+            match
+            .group(
                 1
             )
             .strip()
