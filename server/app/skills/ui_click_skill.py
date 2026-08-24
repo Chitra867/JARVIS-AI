@@ -52,6 +52,14 @@ class UIAutomationClickSkill(
     # final pre-click verification.
     REVALIDATION_DELAY_SECONDS = 0.05
 
+    # Bounded retry is intentionally conservative.
+    #
+    # Only a temporary "not_found" result is retried.
+    # Ambiguous/error results still fail closed
+    # immediately.
+    RESOLUTION_RETRY_ATTEMPTS = 3
+    RESOLUTION_RETRY_DELAY_SECONDS = 0.10
+
     # Maximum allowed movement of a target between two
     # immediate UIA resolutions.
     MAX_POSITION_DRIFT = 8
@@ -318,39 +326,24 @@ class UIAutomationClickSkill(
         # INITIAL TARGET RESOLUTION
         # ==============================================
 
-        try:
-            resolution = (
-                self._resolve(
-                    target_query
-                )
+        (
+            resolution,
+            retry_failure,
+        ) = (
+            self._resolve_with_bounded_retry(
+                query=target_query,
+                expected_hwnd=(
+                    foreground_hwnd
+                ),
             )
+        )
 
-        except Exception as error:
-            print(
-                (
-                    "UI click target resolution "
-                    "failed: "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
-
-            return (
-                "Windows UI Automation could not "
-                "safely resolve that target. "
-                "No click was performed."
-            )
-
-        # Foreground window must not change while the
-        # first lookup is being performed.
         if (
-            self._foreground_window_handle()
-            != foreground_hwnd
+            retry_failure
+            is not None
         ):
             return (
-                "The active window changed while "
-                "I was locating the target. "
-                "No click was performed."
+                retry_failure
             )
 
         blocked_response = (
@@ -738,41 +731,24 @@ class UIAutomationClickSkill(
                 "No click was performed."
             )
 
-        try:
-            second_resolution = (
-                self._resolve(
-                    query
-                )
+        (
+            second_resolution,
+            retry_failure,
+        ) = (
+            self._resolve_with_bounded_retry(
+                query=query,
+                expected_hwnd=(
+                    expected_hwnd
+                ),
             )
-
-        except Exception as error:
-            print(
-                (
-                    "Final UI click resolution "
-                    "failed: "
-                    f"{type(error).__name__}: "
-                    f"{error}"
-                )
-            )
-
-            return (
-                "I couldn't safely revalidate "
-                "the target. "
-                "No click was performed."
-            )
-
-        # ==============================================
-        # WINDOW CHECK AFTER SECOND RESOLUTION
-        # ==============================================
+        )
 
         if (
-            self._foreground_window_handle()
-            != expected_hwnd
+            retry_failure
+            is not None
         ):
             return (
-                "The active window changed while "
-                "the target was being revalidated. "
-                "No click was performed."
+                retry_failure
             )
 
         blocked_response = (
@@ -920,6 +896,169 @@ class UIAutomationClickSkill(
             f"at screen position "
             f"({click_x}, {click_y}) "
             "after UI Automation verification."
+        )
+
+    # ==================================================
+    # BOUNDED SAFE RESOLUTION RETRY
+    # ==================================================
+
+    def _resolve_with_bounded_retry(
+        self,
+        *,
+        query: str,
+        expected_hwnd: int,
+    ) -> tuple[
+        UIAutomationResolution,
+        str | None,
+    ]:
+        """
+        Resolve a target with a small bounded retry window.
+
+        Safety rules:
+        - retry only when UIA reports ``not_found``;
+        - ambiguity is never retried or auto-selected;
+        - UIA errors fail closed immediately;
+        - the foreground HWND must remain unchanged;
+        - no coordinates are used for recovery or guessing.
+        """
+
+        attempts = max(
+            1,
+            int(
+                self.RESOLUTION_RETRY_ATTEMPTS
+            ),
+        )
+
+        last_resolution: (
+            UIAutomationResolution
+            | None
+        ) = None
+
+        for attempt in range(
+            attempts
+        ):
+            if (
+                self._foreground_window_handle()
+                != expected_hwnd
+            ):
+                return (
+                    self._not_found_resolution(
+                        query
+                    ),
+                    (
+                        "The active window changed "
+                        "while I was locating the "
+                        "target. "
+                        "No click was performed."
+                    ),
+                )
+
+            try:
+                resolution = (
+                    self._resolve(
+                        query
+                    )
+                )
+
+            except Exception as error:
+                print(
+                    (
+                        "UI click target resolution "
+                        "failed: "
+                        f"{type(error).__name__}: "
+                        f"{error}"
+                    )
+                )
+
+                return (
+                    self._not_found_resolution(
+                        query
+                    ),
+                    (
+                        "Windows UI Automation could "
+                        "not safely resolve that "
+                        "target. "
+                        "No click was performed."
+                    ),
+                )
+
+            if (
+                self._foreground_window_handle()
+                != expected_hwnd
+            ):
+                return (
+                    resolution,
+                    (
+                        "The active window changed "
+                        "while I was locating the "
+                        "target. "
+                        "No click was performed."
+                    ),
+                )
+
+            last_resolution = (
+                resolution
+            )
+
+            # Resolved, ambiguous, and error results are
+            # final. Only a transient not_found state is
+            # eligible for another attempt.
+            if (
+                resolution.status
+                != "not_found"
+            ):
+                return (
+                    resolution,
+                    None,
+                )
+
+            if (
+                attempt
+                >= (
+                    attempts
+                    - 1
+                )
+            ):
+                break
+
+            time.sleep(
+                self.RESOLUTION_RETRY_DELAY_SECONDS
+            )
+
+        if (
+            last_resolution
+            is None
+        ):
+            last_resolution = (
+                self._not_found_resolution(
+                    query
+                )
+            )
+
+        return (
+            last_resolution,
+            None,
+        )
+
+    # ==================================================
+    # SYNTHETIC NOT-FOUND RESULT
+    # ==================================================
+
+    def _not_found_resolution(
+        self,
+        query: str,
+    ) -> UIAutomationResolution:
+        return (
+            UIAutomationResolution(
+                query=query,
+                status="not_found",
+                target=None,
+                candidates=(),
+                reason=(
+                    "The target could not be "
+                    "safely resolved."
+                ),
+            )
         )
 
     # ==================================================
