@@ -66,6 +66,10 @@ from app.skills.screen_vision_skill import (
     ScreenVisionSkill,
 )
 
+from app.skills.input_control_skill import (
+    InputControlSkill,
+)
+
 class SkillRegistry:
     def __init__(
         self,
@@ -98,6 +102,8 @@ class SkillRegistry:
             ScreenVisionSkill(),
 
             AppLauncherSkill(),
+
+            InputControlSkill(),
 
             AppLauncherSkill(),
 

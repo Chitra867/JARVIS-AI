@@ -106,10 +106,10 @@ class TaskValidatorTests(
         )
 
     # ==================================================
-    # UI ACTION
+    # SUPPORTED INPUT ACTION
     # ==================================================
 
-    def test_type_action_is_blocked(
+    def test_type_action_is_allowed_with_real_skill(
         self,
     ) -> None:
         result = (
@@ -122,17 +122,101 @@ class TaskValidatorTests(
             )
         )
 
+        self.assertTrue(
+            result.is_multi_step
+        )
+
+        self.assertTrue(
+            result.is_safe_to_execute
+        )
+
+        self.assertEqual(
+            len(
+                result.steps
+            ),
+            2,
+        )
+
+        # ----------------------------------------------
+        # OPEN NOTEPAD
+        # ----------------------------------------------
+
+        open_step = (
+            result.steps[0]
+        )
+
+        self.assertEqual(
+            open_step.step_type,
+            StepType.SKILL,
+        )
+
+        self.assertEqual(
+            open_step.handler,
+            "AppLauncherSkill",
+        )
+
+        self.assertTrue(
+            open_step.allowed
+        )
+
+        # ----------------------------------------------
+        # TYPE HELLO
+        # ----------------------------------------------
+
+        type_step = (
+            result.steps[1]
+        )
+
+        self.assertEqual(
+            type_step.step_type,
+            StepType.SKILL,
+        )
+
+        self.assertEqual(
+            type_step.handler,
+            "InputControlSkill",
+        )
+
+        self.assertTrue(
+            type_step.allowed
+        )
+
+    # ==================================================
+    # UNSUPPORTED INPUT ACTION
+    # ==================================================
+
+    def test_unsupported_key_action_is_blocked(
+        self,
+    ) -> None:
+        result = (
+            self.validator
+            .validate(
+                "press alt f4"
+            )
+        )
+
         self.assertFalse(
             result.is_safe_to_execute
         )
 
         self.assertEqual(
-            result.steps[1].step_type,
+            len(
+                result.steps
+            ),
+            1,
+        )
+
+        step = (
+            result.steps[0]
+        )
+
+        self.assertEqual(
+            step.step_type,
             StepType.BLOCKED,
         )
 
         self.assertFalse(
-            result.steps[1].allowed
+            step.allowed
         )
 
     # ==================================================
@@ -246,10 +330,6 @@ class TaskValidatorTests(
             )
         )
 
-        # --------------------------------------------------
-        # PLAN
-        # --------------------------------------------------
-
         self.assertTrue(
             result.is_multi_step
         )
@@ -265,9 +345,9 @@ class TaskValidatorTests(
             2,
         )
 
-        # --------------------------------------------------
+        # ----------------------------------------------
         # SEARCH STEP
-        # --------------------------------------------------
+        # ----------------------------------------------
 
         search_step = (
             result.steps[0]
@@ -305,9 +385,9 @@ class TaskValidatorTests(
             (),
         )
 
-        # --------------------------------------------------
+        # ----------------------------------------------
         # OPEN-FIRST-RESULT STEP
-        # --------------------------------------------------
+        # ----------------------------------------------
 
         open_step = (
             result.steps[1]
@@ -340,9 +420,9 @@ class TaskValidatorTests(
             open_step.allowed
         )
 
-        # --------------------------------------------------
+        # ----------------------------------------------
         # RUNTIME REFERENCE
-        # --------------------------------------------------
+        # ----------------------------------------------
 
         self.assertEqual(
             len(
@@ -427,9 +507,6 @@ class TaskValidatorTests(
             step.reason,
         )
 
-        # Reference still exists, but there is no
-        # previous search step capable of producing
-        # its runtime value.
         self.assertEqual(
             len(
                 step.references

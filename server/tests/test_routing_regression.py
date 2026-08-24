@@ -3,38 +3,66 @@ import unittest
 from app.skills.action_guard_skill import (
     ActionGuardSkill,
 )
-from app.skills.ai_skill import AISkill
+
+from app.skills.ai_skill import (
+    AISkill,
+)
+
 from app.skills.app_launcher_skill import (
     AppLauncherSkill,
 )
+
+from app.skills.input_control_skill import (
+    InputControlSkill,
+)
+
 from app.skills.memory_control_skill import (
     MemoryControlSkill,
 )
-from app.skills.memory_skill import MemorySkill
-from app.skills.registry import SkillRegistry
-from app.skills.search_skill import SearchSkill
-from app.skills.time_skill import TimeSkill
+
+from app.skills.memory_skill import (
+    MemorySkill,
+)
+
+from app.skills.registry import (
+    SkillRegistry,
+)
+
+from app.skills.search_skill import (
+    SearchSkill,
+)
+
+from app.skills.time_skill import (
+    TimeSkill,
+)
 
 
 class RoutingRegressionTests(
     unittest.TestCase
 ):
-    def setUp(self) -> None:
-        self.registry = SkillRegistry()
+    def setUp(
+        self,
+    ) -> None:
+        self.registry = (
+            SkillRegistry()
+        )
 
     def _assert_routes_to(
         self,
         command: str,
         expected_type: type,
     ) -> None:
-        skill = self.registry.find_skill(
-            command
+        skill = (
+            self.registry
+            .find_skill(
+                command
+            )
         )
 
         self.assertIsNotNone(
             skill,
             msg=(
-                f"No skill handled command: "
+                "No skill handled command: "
                 f"{command}"
             ),
         )
@@ -45,7 +73,7 @@ class RoutingRegressionTests(
             msg=(
                 f"{command!r} routed to "
                 f"{type(skill).__name__} "
-                f"instead of "
+                "instead of "
                 f"{expected_type.__name__}"
             ),
         )
@@ -123,14 +151,74 @@ class RoutingRegressionTests(
         )
 
     # ==================================================
-    # UNSUPPORTED UI ACTION
+    # SUPPORTED INPUT ACTION
     # ==================================================
 
-    def test_type_action_routes_to_guard(
+    def test_type_action_routes_to_input_control(
         self,
     ) -> None:
         self._assert_routes_to(
             "type hello",
+            InputControlSkill,
+        )
+
+    # ==================================================
+    # SUPPORTED KEYBOARD ACTION
+    # ==================================================
+
+    def test_press_enter_routes_to_input_control(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "press enter",
+            InputControlSkill,
+        )
+
+    def test_press_copy_routes_to_input_control(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "press copy",
+            InputControlSkill,
+        )
+
+    # ==================================================
+    # SUPPORTED MOUSE ACTION
+    # ==================================================
+
+    def test_click_routes_to_input_control(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "click",
+            InputControlSkill,
+        )
+
+    def test_scroll_routes_to_input_control(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "scroll down",
+            InputControlSkill,
+        )
+
+    # ==================================================
+    # UNSUPPORTED INPUT ACTION
+    # ==================================================
+
+    def test_unsupported_key_action_routes_to_guard(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "press alt f4",
+            ActionGuardSkill,
+        )
+
+    def test_unsupported_drag_routes_to_guard(
+        self,
+    ) -> None:
+        self._assert_routes_to(
+            "drag this",
             ActionGuardSkill,
         )
 
