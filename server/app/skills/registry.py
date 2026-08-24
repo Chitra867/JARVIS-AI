@@ -14,6 +14,10 @@ from app.skills.base import (
     Skill,
 )
 
+from app.skills.file_dialog_skill import (
+    FileDialogSkill,
+)
+
 from app.skills.file_skill import (
     FileSkill,
 )
@@ -66,6 +70,10 @@ from app.skills.time_skill import (
     TimeSkill,
 )
 
+from app.skills.ui_click_skill import (
+    UIAutomationClickSkill,
+)
+
 from app.skills.visual_target_skill import (
     VisualTargetSkill,
 )
@@ -74,9 +82,6 @@ from app.skills.windows_control_skill import (
     WindowsControlSkill,
 )
 
-from app.skills.ui_click_skill import (
-    UIAutomationClickSkill,
-)
 
 class SkillRegistry:
     def __init__(
@@ -89,9 +94,6 @@ class SkillRegistry:
 
             SystemSkill(),
 
-            # Visual target detection must appear
-            # before SearchSkill because commands
-            # can begin with "find".
             VisualTargetSkill(),
 
             SearchSkill(),
@@ -99,6 +101,10 @@ class SkillRegistry:
             PageOpenSkill(),
 
             PageSummarySkill(),
+
+            # File-dialog commands must route before
+            # the general FileSkill.
+            FileDialogSkill(),
 
             FileSkill(),
 
@@ -122,10 +128,8 @@ class SkillRegistry:
 
             MemorySkill(),
 
-            # Unsupported actions stop here.
             ActionGuardSkill(),
 
-            # AI fallback always stays last.
             AISkill(),
         ]
 
