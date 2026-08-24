@@ -36,6 +36,10 @@ from app.skills.time_skill import (
     TimeSkill,
 )
 
+from app.skills.ui_click_skill import (
+    UIAutomationClickSkill,
+)
+
 
 class RoutingRegressionTests(
     unittest.TestCase
@@ -46,6 +50,10 @@ class RoutingRegressionTests(
         self.registry = (
             SkillRegistry()
         )
+
+    # ==================================================
+    # ROUTING ASSERTION HELPER
+    # ==================================================
 
     def _assert_routes_to(
         self,
@@ -151,7 +159,7 @@ class RoutingRegressionTests(
         )
 
     # ==================================================
-    # SUPPORTED INPUT ACTION
+    # SUPPORTED TEXT INPUT
     # ==================================================
 
     def test_type_action_routes_to_input_control(
@@ -163,7 +171,7 @@ class RoutingRegressionTests(
         )
 
     # ==================================================
-    # SUPPORTED KEYBOARD ACTION
+    # SUPPORTED KEYBOARD ACTIONS
     # ==================================================
 
     def test_press_enter_routes_to_input_control(
@@ -183,10 +191,39 @@ class RoutingRegressionTests(
         )
 
     # ==================================================
-    # SUPPORTED MOUSE ACTION
+    # GUARDED UI TARGET CLICKS
     # ==================================================
 
-    def test_click_routes_to_input_control(
+    def test_targeted_click_routes_to_ui_automation(
+        self,
+    ) -> None:
+        commands = (
+            (
+                "click the close button "
+                "on my screen"
+            ),
+
+            "click terminal menu item",
+
+            "click search",
+        )
+
+        for command in (
+            commands
+        ):
+            with self.subTest(
+                command=command
+            ):
+                self._assert_routes_to(
+                    command,
+                    UIAutomationClickSkill,
+                )
+
+    # ==================================================
+    # BASIC MOUSE ACTION
+    # ==================================================
+
+    def test_bare_click_routes_to_input_control(
         self,
     ) -> None:
         self._assert_routes_to(
@@ -203,7 +240,7 @@ class RoutingRegressionTests(
         )
 
     # ==================================================
-    # UNSUPPORTED INPUT ACTION
+    # UNSUPPORTED INPUT ACTIONS
     # ==================================================
 
     def test_unsupported_key_action_routes_to_guard(

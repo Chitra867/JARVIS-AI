@@ -74,6 +74,9 @@ from app.skills.windows_control_skill import (
     WindowsControlSkill,
 )
 
+from app.skills.ui_click_skill import (
+    UIAutomationClickSkill,
+)
 
 class SkillRegistry:
     def __init__(
@@ -110,6 +113,8 @@ class SkillRegistry:
             ScreenVisionSkill(),
 
             AppLauncherSkill(),
+
+            UIAutomationClickSkill(),
 
             InputControlSkill(),
 
