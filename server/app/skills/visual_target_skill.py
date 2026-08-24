@@ -125,11 +125,13 @@ class VisualTargetSkill(
         ):
             return True
 
-        # Otherwise require UI-oriented terminology so
-        # commands such as "find Python tutorials" are
-        # not intercepted.
+        # Without explicit screen wording, require
+        # terminology that strongly indicates a UI
+        # element.
         normalized_target = (
-            target.lower()
+            target
+            .strip()
+            .lower()
         )
 
         return any(
@@ -162,13 +164,6 @@ class VisualTargetSkill(
                 "screen element to locate."
             )
 
-        # Remove conversational articles such as:
-        #
-        # "the close button"
-        #       ↓
-        # "close button"
-        #
-        # This improves Windows UI Automation matching.
         lookup_target = (
             self._clean_target_phrase(
                 target
@@ -179,15 +174,30 @@ class VisualTargetSkill(
         # PASS 0 — WINDOWS UI AUTOMATION
         # ==================================================
         #
-        # This is preferred over computer vision because
-        # UI Automation gives deterministic control names,
-        # types and exact screen rectangles.
+        # UIA is preferred because it provides:
+        #
+        # - deterministic names
+        # - control types
+        # - visibility
+        # - enabled state
+        # - exact desktop rectangles
+        #
+        # Most importantly, resolve_target() lets us
+        # distinguish:
+        #
+        # resolved
+        # ambiguous
+        # not_found
+        # error
+        #
+        # An ambiguous result MUST NOT fall through to
+        # vision because that would allow the VLM to guess.
         # ==================================================
 
         try:
-            ui_target = (
+            ui_resolution = (
                 ui_automation_service
-                .find_target(
+                .resolve_target(
                     lookup_target
                 )
             )
@@ -201,12 +211,25 @@ class VisualTargetSkill(
                 )
             )
 
-            ui_target = None
+            ui_resolution = None
+
+        # ==================================================
+        # UIA — RESOLVED
+        # ==================================================
 
         if (
-            ui_target
+            ui_resolution
+            is not None
+            and
+            ui_resolution.resolved
+            and
+            ui_resolution.target
             is not None
         ):
+            ui_target = (
+                ui_resolution.target
+            )
+
             status = (
                 "enabled"
                 if ui_target.enabled
@@ -225,7 +248,95 @@ class VisualTargetSkill(
             )
 
         # ==================================================
+        # UIA — AMBIGUOUS
+        # ==================================================
+        #
+        # Fail closed.
+        #
+        # Do not use vision after UIA already established
+        # that multiple plausible targets exist.
+        # ==================================================
+
+        if (
+            ui_resolution
+            is not None
+            and
+            ui_resolution.ambiguous
+        ):
+            candidate_descriptions: list[
+                str
+            ] = []
+
+            for candidate in (
+                ui_resolution
+                .candidates[:5]
+            ):
+                candidate_descriptions.append(
+                    (
+                        f"{candidate.name} "
+                        f"({candidate.control_type})"
+                    )
+                )
+
+            candidates_text = (
+                "; ".join(
+                    candidate_descriptions
+                )
+            )
+
+            if not (
+                candidates_text
+            ):
+                candidates_text = (
+                    "multiple visible controls"
+                )
+
+            return (
+                f"I found multiple possible matches "
+                f"for '{target}': "
+                f"{candidates_text}. "
+                "Please specify the exact control "
+                "you mean. "
+                "No vision fallback or click "
+                "was performed."
+            )
+
+        # ==================================================
+        # UIA — ERROR
+        # ==================================================
+        #
+        # Since this skill is location-only, a UIA runtime
+        # failure may continue to vision.
+        #
+        # Automatic clicking is still not performed.
+        # ==================================================
+
+        if (
+            ui_resolution
+            is not None
+            and
+            ui_resolution.status
+            == "error"
+        ):
+            print(
+                (
+                    "UI Automation could not complete "
+                    "the lookup. Continuing with "
+                    "location-only vision fallback."
+                )
+            )
+
+        # ==================================================
         # PASS 1 — FULL-SCREEN VISION
+        # ==================================================
+        #
+        # Vision is used only when:
+        #
+        # - UIA returned not_found
+        # - UIA failed internally
+        # - UIA lookup unexpectedly raised
+        #
+        # Vision is NOT used for ambiguity.
         # ==================================================
 
         try:
@@ -303,7 +414,6 @@ class VisualTargetSkill(
             ValueError,
             TypeError,
             KeyError,
-            json.JSONDecodeError,
         ) as error:
             print(
                 (
@@ -418,8 +528,9 @@ Coordinate rules:
 - y=0 is the top edge of THIS supplied image.
 - y=1000 is the bottom edge of THIS supplied image.
 - Return the CENTER point of the requested target.
-- Coordinates must be relative to this supplied image,
-  even when the image is only a cropped region.
+- Coordinates must be relative to this supplied image.
+- If this image is a cropped region, coordinates must
+  be relative to that cropped region.
 
 If the target is not clearly visible, return:
 
@@ -433,15 +544,14 @@ If the target is not clearly visible, return:
 
 Rules:
 
-- Inspect the image carefully before deciding that the
-  target is absent.
+- Inspect the supplied image carefully.
 - Locate only something actually visible.
 - Do not invent hidden controls.
 - Do not substitute a different UI element.
-- Small buttons, icons and title-bar controls still
-  count as visible targets.
-- If multiple matches exist and the intended target
-  cannot be determined, return found=false.
+- Small title-bar controls, buttons and icons count
+  as visible targets.
+- If multiple plausible matches exist and the intended
+  target cannot be determined, return found=false.
 - confidence must be between 0.0 and 1.0.
 - Do not describe the screenshot.
 - Do not explain your reasoning.
@@ -508,7 +618,9 @@ Rules:
             .strip()
         )
 
-        if not content:
+        if not (
+            content
+        ):
             raise ValueError(
                 "Vision model returned "
                 "an empty response."
@@ -538,7 +650,9 @@ Rules:
             .strip()
         )
 
-        if not label:
+        if not (
+            label
+        ):
             label = (
                 target
             )
@@ -578,20 +692,22 @@ Rules:
             )
         )
 
-        return VisualTarget(
-            label=label,
+        return (
+            VisualTarget(
+                label=label,
 
-            normalized_x=x,
-            normalized_y=y,
+                normalized_x=x,
+                normalized_y=y,
 
-            screen_x=screen_x,
-            screen_y=screen_y,
+                screen_x=screen_x,
+                screen_y=screen_y,
 
-            confidence=confidence,
+                confidence=confidence,
 
-            region_name=(
-                capture.region_name
-            ),
+                region_name=(
+                    capture.region_name
+                ),
+            )
         )
 
     # ==================================================
@@ -610,8 +726,9 @@ Rules:
             .strip()
         )
 
-        # Vision models occasionally wrap JSON in a
-        # Markdown code block even when told not to.
+        # A model can occasionally ignore the JSON-only
+        # instruction and wrap its result in a Markdown
+        # code fence.
         if (
             clean.startswith(
                 "```"
@@ -687,9 +804,11 @@ Rules:
                 f"{key} coordinate."
             )
 
-        value = round(
-            float(
-                raw_value
+        value = (
+            round(
+                float(
+                    raw_value
+                )
             )
         )
 
@@ -784,6 +903,10 @@ Rules:
             )
         )
 
+        # ==============================================
+        # EXPLICIT POSITION WORDING
+        # ==============================================
+
         explicit_regions = (
             (
                 (
@@ -860,9 +983,10 @@ Rules:
             ),
         )
 
-        for phrases, region in (
-            explicit_regions
-        ):
+        for (
+            phrases,
+            region,
+        ) in explicit_regions:
             if any(
                 phrase
                 in normalized
@@ -874,7 +998,10 @@ Rules:
                     region
                 )
 
-        # Windows title-bar controls.
+        # ==============================================
+        # WINDOWS TITLE-BAR CONTROLS
+        # ==============================================
+
         if any(
             phrase
             in normalized
@@ -895,7 +1022,10 @@ Rules:
                 "top_right"
             )
 
-        # Windows Start.
+        # ==============================================
+        # WINDOWS START
+        # ==============================================
+
         if any(
             phrase
             in normalized
@@ -911,7 +1041,10 @@ Rules:
                 "bottom_left"
             )
 
-        # System tray.
+        # ==============================================
+        # SYSTEM TRAY
+        # ==============================================
+
         if any(
             phrase
             in normalized
@@ -926,6 +1059,10 @@ Rules:
             return (
                 "bottom_right"
             )
+
+        # ==============================================
+        # TASKBAR
+        # ==============================================
 
         if (
             "taskbar"
@@ -1006,12 +1143,14 @@ Rules:
             )
 
             if (
-                match is None
+                match
+                is None
             ):
                 continue
 
             target = (
-                match.group(
+                match
+                .group(
                     1
                 )
                 .strip()
@@ -1020,7 +1159,9 @@ Rules:
                 )
             )
 
-            if target:
+            if (
+                target
+            ):
                 return (
                     target
                 )

@@ -9,6 +9,11 @@ from pywinauto import (
 )
 
 
+# ======================================================
+# TARGET
+# ======================================================
+
+
 @dataclass(
     frozen=True
 )
@@ -27,173 +32,370 @@ class UIAutomationTarget:
     enabled: bool
     visible: bool
 
+    automation_id: str = ""
+
+
+# ======================================================
+# LOOKUP RESULT
+# ======================================================
+
+
+@dataclass(
+    frozen=True
+)
+class UIAutomationResolution:
+    query: str
+    status: str
+
+    target: (
+        UIAutomationTarget
+        | None
+    )
+
+    candidates: tuple[
+        UIAutomationTarget,
+        ...,
+    ]
+
+    reason: str
+
+    @property
+    def resolved(
+        self,
+    ) -> bool:
+        return (
+            self.status
+            == "resolved"
+            and
+            self.target
+            is not None
+        )
+
+    @property
+    def ambiguous(
+        self,
+    ) -> bool:
+        return (
+            self.status
+            == "ambiguous"
+        )
+
+
+# ======================================================
+# PARSED QUERY
+# ======================================================
+
+
+@dataclass(
+    frozen=True
+)
+class _ParsedQuery:
+    label: str
+
+    control_types: tuple[
+        str,
+        ...,
+    ]
+
+
+# ======================================================
+# SERVICE
+# ======================================================
+
 
 class UIAutomationService:
     # ==================================================
-    # FIND TARGET
+    # PUBLIC — FIND TARGET
     # ==================================================
 
     def find_target(
         self,
         query: str,
     ) -> UIAutomationTarget | None:
-        normalized_query = (
-            self._normalize(
+        """
+        Compatibility helper.
+
+        Returns a target only when the lookup resolves
+        to exactly one safe UI Automation candidate.
+
+        Ambiguous and missing targets both return None.
+
+        For safety-sensitive operations, use
+        resolve_target() instead so ambiguity can be
+        distinguished from a genuine not-found result.
+        """
+
+        resolution = (
+            self.resolve_target(
                 query
             )
         )
 
-        if not normalized_query:
+        if not (
+            resolution.resolved
+        ):
             return None
 
+        return (
+            resolution.target
+        )
+
+    # ==================================================
+    # PUBLIC — RESOLVE TARGET
+    # ==================================================
+
+    def resolve_target(
+        self,
+        query: str,
+    ) -> UIAutomationResolution:
+        original_query = (
+            query
+            .strip()
+        )
+
+        parsed_query = (
+            self._parse_query(
+                original_query
+            )
+        )
+
+        if not (
+            parsed_query.label
+        ):
+            return (
+                UIAutomationResolution(
+                    query=(
+                        original_query
+                    ),
+
+                    status="not_found",
+
+                    target=None,
+
+                    candidates=(),
+
+                    reason=(
+                        "The target query "
+                        "was empty."
+                    ),
+                )
+            )
+
         try:
-            hwnd = (
-                win32gui
-                .GetForegroundWindow()
-            )
-
-            if not hwnd:
-                return None
-
             window = (
-                Desktop(
-                    backend="uia"
-                )
-                .window(
-                    handle=hwnd
-                )
-                .wrapper_object()
+                self._get_foreground_window()
             )
 
-            matches: list[
-                UIAutomationTarget
+            if (
+                window
+                is None
+            ):
+                return (
+                    UIAutomationResolution(
+                        query=(
+                            original_query
+                        ),
+
+                        status="not_found",
+
+                        target=None,
+
+                        candidates=(),
+
+                        reason=(
+                            "No foreground window "
+                            "was available."
+                        ),
+                    )
+                )
+
+            scored_candidates: list[
+                tuple[
+                    int,
+                    UIAutomationTarget,
+                ]
             ] = []
 
             for control in (
                 window.descendants()
             ):
-                try:
-                    name = (
+                candidate = (
+                    self._build_target(
                         control
-                        .window_text()
-                        .strip()
                     )
+                )
 
-                    if not name:
-                        continue
-
-                    normalized_name = (
-                        self._normalize(
-                            name
-                        )
-                    )
-
-                    if not (
-                        self._matches(
-                            query=(
-                                normalized_query
-                            ),
-                            name=(
-                                normalized_name
-                            ),
-                        )
-                    ):
-                        continue
-
-                    rectangle = (
-                        control
-                        .rectangle()
-                    )
-
-                    left = int(
-                        rectangle.left
-                    )
-
-                    top = int(
-                        rectangle.top
-                    )
-
-                    right = int(
-                        rectangle.right
-                    )
-
-                    bottom = int(
-                        rectangle.bottom
-                    )
-
-                    if (
-                        right <= left
-                        or bottom <= top
-                    ):
-                        continue
-
-                    visible = bool(
-                        control
-                        .is_visible()
-                    )
-
-                    enabled = bool(
-                        control
-                        .is_enabled()
-                    )
-
-                    if not visible:
-                        continue
-
-                    control_type = (
-                        str(
-                            control
-                            .element_info
-                            .control_type
-                        )
-                        .strip()
-                    )
-
-                    matches.append(
-                        UIAutomationTarget(
-                            name=name,
-
-                            control_type=(
-                                control_type
-                            ),
-
-                            left=left,
-                            top=top,
-                            right=right,
-                            bottom=bottom,
-
-                            center_x=(
-                                (
-                                    left
-                                    + right
-                                )
-                                // 2
-                            ),
-
-                            center_y=(
-                                (
-                                    top
-                                    + bottom
-                                )
-                                // 2
-                            ),
-
-                            enabled=enabled,
-                            visible=visible,
-                        )
-                    )
-
-                except Exception:
-                    # One inaccessible UIA child should
-                    # not break the entire tree search.
+                if (
+                    candidate
+                    is None
+                ):
                     continue
 
+                # ======================================
+                # OPTIONAL CONTROL-TYPE FILTER
+                # ======================================
+
+                if (
+                    parsed_query
+                    .control_types
+                    and
+                    candidate.control_type
+                    not in (
+                        parsed_query
+                        .control_types
+                    )
+                ):
+                    continue
+
+                score = (
+                    self._match_score(
+                        query=(
+                            parsed_query
+                            .label
+                        ),
+                        name=(
+                            candidate
+                            .name
+                        ),
+                    )
+                )
+
+                if (
+                    score
+                    <= 0
+                ):
+                    continue
+
+                scored_candidates.append(
+                    (
+                        score,
+                        candidate,
+                    )
+                )
+
+            # ==========================================
+            # NOTHING MATCHED
+            # ==========================================
+
+            if not (
+                scored_candidates
+            ):
+                return (
+                    UIAutomationResolution(
+                        query=(
+                            original_query
+                        ),
+
+                        status="not_found",
+
+                        target=None,
+
+                        candidates=(),
+
+                        reason=(
+                            "No visible UI Automation "
+                            "element matched the query."
+                        ),
+                    )
+                )
+
+            # ==========================================
+            # ONLY CONSIDER BEST MATCH TIER
+            # ==========================================
+
+            highest_score = max(
+                score
+
+                for (
+                    score,
+                    _
+                )
+                in scored_candidates
+            )
+
+            best_candidates = [
+                candidate
+
+                for (
+                    score,
+                    candidate
+                )
+                in scored_candidates
+
+                if (
+                    score
+                    == highest_score
+                )
+            ]
+
+            # ==========================================
+            # REMOVE DUPLICATE UIA REPRESENTATIONS
+            # ==========================================
+
+            best_candidates = (
+                self._deduplicate_targets(
+                    best_candidates
+                )
+            )
+
+            # ==========================================
+            # UNIQUE TARGET
+            # ==========================================
+
+            if (
+                len(
+                    best_candidates
+                )
+                == 1
+            ):
+                target = (
+                    best_candidates[0]
+                )
+
+                return (
+                    UIAutomationResolution(
+                        query=(
+                            original_query
+                        ),
+
+                        status="resolved",
+
+                        target=target,
+
+                        candidates=(
+                            target,
+                        ),
+
+                        reason=(
+                            "Exactly one highest-"
+                            "quality visible match "
+                            "was found."
+                        ),
+                    )
+                )
+
+            # ==========================================
+            # AMBIGUOUS TARGET
+            # ==========================================
+
             return (
-                self._choose_unique_match(
+                UIAutomationResolution(
                     query=(
-                        normalized_query
+                        original_query
                     ),
-                    matches=matches,
+
+                    status="ambiguous",
+
+                    target=None,
+
+                    candidates=tuple(
+                        best_candidates
+                    ),
+
+                    reason=(
+                        "Multiple equally strong "
+                        "visible matches were found."
+                    ),
                 )
             )
 
@@ -206,141 +408,490 @@ class UIAutomationService:
                 )
             )
 
-            return None
+            return (
+                UIAutomationResolution(
+                    query=(
+                        original_query
+                    ),
+
+                    status="error",
+
+                    target=None,
+
+                    candidates=(),
+
+                    reason=(
+                        "UI Automation lookup "
+                        "failed."
+                    ),
+                )
+            )
 
     # ==================================================
-    # CHOOSE UNIQUE MATCH
+    # PUBLIC — FIND CANDIDATES
     # ==================================================
 
-    def _choose_unique_match(
+    def find_candidates(
         self,
         query: str,
-        matches: list[
-            UIAutomationTarget
-        ],
+    ) -> tuple[
+        UIAutomationTarget,
+        ...,
+    ]:
+        """
+        Useful for diagnostics and future clarification
+        UI. This method never chooses between ambiguous
+        candidates.
+        """
+
+        resolution = (
+            self.resolve_target(
+                query
+            )
+        )
+
+        return (
+            resolution.candidates
+        )
+
+    # ==================================================
+    # FOREGROUND WINDOW
+    # ==================================================
+
+    def _get_foreground_window(
+        self,
+    ):
+        hwnd = (
+            win32gui
+            .GetForegroundWindow()
+        )
+
+        if not hwnd:
+            return None
+
+        return (
+            Desktop(
+                backend="uia"
+            )
+            .window(
+                handle=hwnd
+            )
+            .wrapper_object()
+        )
+
+    # ==================================================
+    # BUILD TARGET
+    # ==================================================
+
+    def _build_target(
+        self,
+        control,
     ) -> UIAutomationTarget | None:
-        if not matches:
-            return None
+        try:
+            name = (
+                control
+                .window_text()
+                .strip()
+            )
 
-        # ==============================================
-        # EXACT NAME MATCH
-        # ==============================================
+            if not name:
+                return None
 
-        exact_matches = [
-            target
-            for target
-            in matches
+            visible = bool(
+                control
+                .is_visible()
+            )
+
+            if not visible:
+                return None
+
+            enabled = bool(
+                control
+                .is_enabled()
+            )
+
+            rectangle = (
+                control
+                .rectangle()
+            )
+
+            left = int(
+                rectangle.left
+            )
+
+            top = int(
+                rectangle.top
+            )
+
+            right = int(
+                rectangle.right
+            )
+
+            bottom = int(
+                rectangle.bottom
+            )
+
+            # Invalid/empty rectangles cannot safely
+            # represent an actionable screen target.
             if (
-                self._normalize(
-                    target.name
+                right
+                <= left
+                or
+                bottom
+                <= top
+            ):
+                return None
+
+            control_type = (
+                str(
+                    control
+                    .element_info
+                    .control_type
                 )
-                == query
+                .strip()
             )
-        ]
 
-        if (
-            len(
-                exact_matches
+            automation_id = (
+                str(
+                    getattr(
+                        control
+                        .element_info,
+                        "automation_id",
+                        "",
+                    )
+                    or ""
+                )
+                .strip()
             )
-            == 1
-        ):
+
             return (
-                exact_matches[0]
+                UIAutomationTarget(
+                    name=name,
+
+                    control_type=(
+                        control_type
+                    ),
+
+                    left=left,
+                    top=top,
+                    right=right,
+                    bottom=bottom,
+
+                    center_x=(
+                        (
+                            left
+                            + right
+                        )
+                        // 2
+                    ),
+
+                    center_y=(
+                        (
+                            top
+                            + bottom
+                        )
+                        // 2
+                    ),
+
+                    enabled=enabled,
+                    visible=visible,
+
+                    automation_id=(
+                        automation_id
+                    ),
+                )
             )
 
-        if (
-            len(
-                exact_matches
-            )
-            > 1
-        ):
+        except Exception:
+            # Some UI Automation descendants may throw
+            # when queried. Ignore only that individual
+            # element rather than failing the whole tree.
             return None
 
-        # ==============================================
-        # ONE PARTIAL MATCH ONLY
-        # ==============================================
-
-        if (
-            len(
-                matches
-            )
-            == 1
-        ):
-            return (
-                matches[0]
-            )
-
-        # Ambiguous matches fail closed.
-        return None
-
     # ==================================================
-    # MATCH QUERY
+    # MATCH SCORE
     # ==================================================
 
-    def _matches(
+    def _match_score(
         self,
         query: str,
         name: str,
-    ) -> bool:
-        if (
-            query
-            == name
-        ):
-            return True
-
-        if (
-            query
-            in name
-        ):
-            return True
-
-        if (
-            name
-            in query
-        ):
-            return True
-
-        return False
-
-    # ==================================================
-    # NORMALIZE
-    # ==================================================
-
-    def _normalize(
-        self,
-        text: str,
-    ) -> str:
-        normalized = (
-            " ".join(
-                text
-                .strip()
-                .lower()
-                .replace(
-                    "-",
-                    " ",
-                )
-                .split()
+    ) -> int:
+        normalized_name = (
+            self._normalize_text(
+                name
             )
         )
 
-        # Remove common UI nouns that users may include
-        # even when UI Automation exposes only the label.
-        removable_suffixes = (
-            " button",
-            " icon",
-            " control",
+        if not (
+            normalized_name
+        ):
+            return 0
+
+        # ==============================================
+        # TIER 3 — EXACT LABEL
+        # ==============================================
+
+        if (
+            normalized_name
+            == query
+        ):
+            return 3
+
+        # ==============================================
+        # TIER 2 — QUERY CONTAINED IN LABEL
+        # ==============================================
+
+        if (
+            query
+            in normalized_name
+        ):
+            return 2
+
+        # ==============================================
+        # TIER 1 — ALL QUERY WORDS PRESENT
+        # ==============================================
+
+        query_tokens = set(
+            query.split()
         )
 
-        for suffix in (
-            removable_suffixes
+        name_tokens = set(
+            normalized_name.split()
+        )
+
+        if (
+            query_tokens
+            and
+            query_tokens.issubset(
+                name_tokens
+            )
         ):
+            return 1
+
+        return 0
+
+    # ==================================================
+    # DEDUPLICATE
+    # ==================================================
+
+    def _deduplicate_targets(
+        self,
+        targets: list[
+            UIAutomationTarget
+        ],
+    ) -> list[
+        UIAutomationTarget
+    ]:
+        unique: list[
+            UIAutomationTarget
+        ] = []
+
+        seen: set[
+            tuple[
+                str,
+                str,
+                int,
+                int,
+                int,
+                int,
+            ]
+        ] = set()
+
+        for target in (
+            targets
+        ):
+            key = (
+                self._normalize_text(
+                    target.name
+                ),
+
+                target.control_type,
+
+                target.left,
+                target.top,
+                target.right,
+                target.bottom,
+            )
+
+            if (
+                key
+                in seen
+            ):
+                continue
+
+            seen.add(
+                key
+            )
+
+            unique.append(
+                target
+            )
+
+        return (
+            unique
+        )
+
+    # ==================================================
+    # PARSE QUERY
+    # ==================================================
+
+    def _parse_query(
+        self,
+        query: str,
+    ) -> _ParsedQuery:
+        normalized = (
+            self._normalize_text(
+                query
+            )
+        )
+
+        # ==============================================
+        # REMOVE LEADING ARTICLES
+        # ==============================================
+
+        for article in (
+            "the ",
+            "a ",
+            "an ",
+        ):
+            if (
+                normalized
+                .startswith(
+                    article
+                )
+            ):
+                normalized = (
+                    normalized[
+                        len(
+                            article
+                        ):
+                    ]
+                    .strip()
+                )
+
+                break
+
+        # ==============================================
+        # OPTIONAL CONTROL-TYPE QUALIFIERS
+        # ==============================================
+        #
+        # Longer phrases must come first.
+        # ==============================================
+
+        qualifiers: tuple[
+            tuple[
+                str,
+                tuple[
+                    str,
+                    ...,
+                ],
+            ],
+            ...,
+        ] = (
+            (
+                "menu item",
+                (
+                    "MenuItem",
+                ),
+            ),
+
+            (
+                "search box",
+                (
+                    "Edit",
+                    "ComboBox",
+                ),
+            ),
+
+            (
+                "text box",
+                (
+                    "Edit",
+                ),
+            ),
+
+            (
+                "textbox",
+                (
+                    "Edit",
+                ),
+            ),
+
+            (
+                "input field",
+                (
+                    "Edit",
+                    "ComboBox",
+                ),
+            ),
+
+            (
+                "checkbox",
+                (
+                    "CheckBox",
+                ),
+            ),
+
+            (
+                "radio button",
+                (
+                    "RadioButton",
+                ),
+            ),
+
+            (
+                "dropdown",
+                (
+                    "ComboBox",
+                ),
+            ),
+
+            (
+                "button",
+                (
+                    "Button",
+                ),
+            ),
+
+            (
+                "tab",
+                (
+                    "TabItem",
+                ),
+            ),
+
+            (
+                "link",
+                (
+                    "Hyperlink",
+                ),
+            ),
+
+            (
+                "menu",
+                (
+                    "Menu",
+                    "MenuItem",
+                ),
+            ),
+        )
+
+        for (
+            qualifier,
+            control_types,
+        ) in qualifiers:
+            suffix = (
+                f" {qualifier}"
+            )
+
             if (
                 normalized
                 .endswith(
                     suffix
                 )
             ):
-                normalized = (
+                label = (
                     normalized[
                         :-len(
                             suffix
@@ -349,9 +900,50 @@ class UIAutomationService:
                     .strip()
                 )
 
-                break
+                if (
+                    label
+                ):
+                    return (
+                        _ParsedQuery(
+                            label=label,
 
-        return normalized
+                            control_types=(
+                                control_types
+                            ),
+                        )
+                    )
+
+        return (
+            _ParsedQuery(
+                label=normalized,
+                control_types=(),
+            )
+        )
+
+    # ==================================================
+    # NORMALIZE TEXT
+    # ==================================================
+
+    def _normalize_text(
+        self,
+        text: str,
+    ) -> str:
+        return (
+            " ".join(
+                text
+                .strip()
+                .lower()
+                .replace(
+                    "-",
+                    " ",
+                )
+                .replace(
+                    "_",
+                    " ",
+                )
+                .split()
+            )
+        )
 
 
 ui_automation_service = (
