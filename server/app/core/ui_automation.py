@@ -1,12 +1,128 @@
+import time
+
 from dataclasses import (
     dataclass,
 )
 
+import psutil
+import win32con
 import win32gui
+import win32process
 
 from pywinauto import (
     Desktop,
 )
+
+
+# ======================================================
+# TOP-LEVEL WINDOW
+# ======================================================
+
+
+@dataclass(
+    frozen=True
+)
+class UIAutomationWindow:
+    hwnd: int
+
+    title: str
+
+    process_id: int
+    process_name: str
+
+    left: int
+    top: int
+    right: int
+    bottom: int
+
+    visible: bool
+    enabled: bool
+    minimized: bool
+
+
+# ======================================================
+# WINDOW RESOLUTION
+# ======================================================
+
+
+@dataclass(
+    frozen=True
+)
+class UIAutomationWindowResolution:
+    query: str
+    status: str
+
+    window: (
+        UIAutomationWindow
+        | None
+    )
+
+    candidates: tuple[
+        UIAutomationWindow,
+        ...,
+    ]
+
+    reason: str
+
+    @property
+    def resolved(
+        self,
+    ) -> bool:
+        return (
+            self.status
+            == "resolved"
+            and
+            self.window
+            is not None
+        )
+
+    @property
+    def ambiguous(
+        self,
+    ) -> bool:
+        return (
+            self.status
+            == "ambiguous"
+        )
+
+
+# ======================================================
+# FOCUS RESULT
+# ======================================================
+
+
+@dataclass(
+    frozen=True
+)
+class UIAutomationFocusResult:
+    status: str
+
+    window: (
+        UIAutomationWindow
+        | None
+    )
+
+    candidates: tuple[
+        UIAutomationWindow,
+        ...,
+    ]
+
+    reason: str
+
+    @property
+    def success(
+        self,
+    ) -> bool:
+        return (
+            self.status
+            in {
+                "already_focused",
+                "focused",
+            }
+            and
+            self.window
+            is not None
+        )
 
 
 # ======================================================
@@ -104,6 +220,757 @@ class _ParsedQuery:
 
 
 class UIAutomationService:
+    FOCUS_TIMEOUT_SECONDS = 1.5
+
+    FOCUS_POLL_INTERVAL_SECONDS = 0.05
+
+    # ==================================================
+    # PUBLIC — FOREGROUND WINDOW INFO
+    # ==================================================
+
+    def get_foreground_window_info(
+        self,
+    ) -> UIAutomationWindow | None:
+        hwnd = (
+            self._foreground_window_handle()
+        )
+
+        if not (
+            hwnd
+        ):
+            return None
+
+        return (
+            self._build_window_info(
+                hwnd
+            )
+        )
+
+    # ==================================================
+    # PUBLIC — RESOLVE TOP-LEVEL WINDOW
+    # ==================================================
+
+    def resolve_window(
+        self,
+        *,
+        process_names: tuple[
+            str,
+            ...,
+        ] = (),
+        title: str | None = None,
+        preferred_hwnd: int | None = None,
+    ) -> UIAutomationWindowResolution:
+        normalized_process_names = (
+            frozenset(
+                name
+                .strip()
+                .lower()
+                for name
+                in process_names
+                if name
+                and name.strip()
+            )
+        )
+
+        normalized_title = (
+            self._normalize_text(
+                title
+                or ""
+            )
+        )
+
+        query = (
+            self._window_query_text(
+                process_names=(
+                    normalized_process_names
+                ),
+                title=(
+                    normalized_title
+                ),
+                preferred_hwnd=(
+                    preferred_hwnd
+                ),
+            )
+        )
+
+        if (
+            not normalized_process_names
+            and not normalized_title
+            and not preferred_hwnd
+        ):
+            return (
+                UIAutomationWindowResolution(
+                    query=query,
+
+                    status="not_found",
+
+                    window=None,
+
+                    candidates=(),
+
+                    reason=(
+                        "No window identity "
+                        "constraints were provided."
+                    ),
+                )
+            )
+
+        try:
+            # ------------------------------------------
+            # STRONGEST IDENTITY — PREFERRED HWND
+            # ------------------------------------------
+            #
+            # A previously verified window handle is the
+            # safest recovery target. It is accepted only
+            # when it still matches the supplied process /
+            # title constraints.
+            # ------------------------------------------
+
+            if (
+                preferred_hwnd
+            ):
+                preferred = (
+                    self._build_window_info(
+                        int(
+                            preferred_hwnd
+                        )
+                    )
+                )
+
+                if (
+                    preferred
+                    is not None
+                    and self._window_matches_constraints(
+                        window=preferred,
+                        process_names=(
+                            normalized_process_names
+                        ),
+                        title=(
+                            normalized_title
+                        ),
+                    )
+                ):
+                    return (
+                        UIAutomationWindowResolution(
+                            query=query,
+
+                            status="resolved",
+
+                            window=(
+                                preferred
+                            ),
+
+                            candidates=(
+                                preferred,
+                            ),
+
+                            reason=(
+                                "The previously verified "
+                                "window handle still "
+                                "matches the expected "
+                                "application."
+                            ),
+                        )
+                    )
+
+            # ------------------------------------------
+            # ENUMERATE SAFE TOP-LEVEL WINDOWS
+            # ------------------------------------------
+
+            windows = (
+                self._enumerate_top_level_windows()
+            )
+
+            scored: list[
+                tuple[
+                    int,
+                    UIAutomationWindow,
+                ]
+            ] = []
+
+            for window in (
+                windows
+            ):
+                if not (
+                    self._window_matches_constraints(
+                        window=window,
+                        process_names=(
+                            normalized_process_names
+                        ),
+                        title=(
+                            normalized_title
+                        ),
+                    )
+                ):
+                    continue
+
+                score = (
+                    self._window_match_score(
+                        window=window,
+                        title=(
+                            normalized_title
+                        ),
+                    )
+                )
+
+                scored.append(
+                    (
+                        score,
+                        window,
+                    )
+                )
+
+            if not (
+                scored
+            ):
+                return (
+                    UIAutomationWindowResolution(
+                        query=query,
+
+                        status="not_found",
+
+                        window=None,
+
+                        candidates=(),
+
+                        reason=(
+                            "No visible top-level "
+                            "window matched the "
+                            "expected application."
+                        ),
+                    )
+                )
+
+            highest_score = max(
+                score
+                for (
+                    score,
+                    _
+                )
+                in scored
+            )
+
+            candidates = [
+                window
+                for (
+                    score,
+                    window
+                )
+                in scored
+                if (
+                    score
+                    == highest_score
+                )
+            ]
+
+            candidates = (
+                self._deduplicate_windows(
+                    candidates
+                )
+            )
+
+            if (
+                len(
+                    candidates
+                )
+                == 1
+            ):
+                window = (
+                    candidates[
+                        0
+                    ]
+                )
+
+                return (
+                    UIAutomationWindowResolution(
+                        query=query,
+
+                        status="resolved",
+
+                        window=window,
+
+                        candidates=(
+                            window,
+                        ),
+
+                        reason=(
+                            "Exactly one safe "
+                            "top-level window matched "
+                            "the expected application."
+                        ),
+                    )
+                )
+
+            return (
+                UIAutomationWindowResolution(
+                    query=query,
+
+                    status="ambiguous",
+
+                    window=None,
+
+                    candidates=tuple(
+                        candidates
+                    ),
+
+                    reason=(
+                        "Multiple equally strong "
+                        "top-level windows matched "
+                        "the expected application. "
+                        "No window was chosen."
+                    ),
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "UI Automation window "
+                    "resolution failed: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                UIAutomationWindowResolution(
+                    query=query,
+
+                    status="error",
+
+                    window=None,
+
+                    candidates=(),
+
+                    reason=(
+                        "Window resolution failed."
+                    ),
+                )
+            )
+
+    # ==================================================
+    # PUBLIC — FOCUS EXACT WINDOW
+    # ==================================================
+
+    def focus_window(
+        self,
+        hwnd: int,
+        *,
+        expected_process_names: tuple[
+            str,
+            ...,
+        ] = (),
+        expected_title: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> UIAutomationFocusResult:
+        normalized_process_names = (
+            frozenset(
+                name
+                .strip()
+                .lower()
+                for name
+                in expected_process_names
+                if name
+                and name.strip()
+            )
+        )
+
+        normalized_title = (
+            self._normalize_text(
+                expected_title
+                or ""
+            )
+        )
+
+        target = (
+            self._build_window_info(
+                int(
+                    hwnd
+                )
+            )
+        )
+
+        if (
+            target
+            is None
+        ):
+            return (
+                UIAutomationFocusResult(
+                    status="not_found",
+
+                    window=None,
+
+                    candidates=(),
+
+                    reason=(
+                        "The expected application "
+                        "window no longer exists or "
+                        "is not safely accessible."
+                    ),
+                )
+            )
+
+        if not (
+            self._window_matches_constraints(
+                window=target,
+                process_names=(
+                    normalized_process_names
+                ),
+                title=(
+                    normalized_title
+                ),
+            )
+        ):
+            return (
+                UIAutomationFocusResult(
+                    status="mismatch",
+
+                    window=None,
+
+                    candidates=(
+                        target,
+                    ),
+
+                    reason=(
+                        "The window handle no longer "
+                        "matches the expected "
+                        "application identity."
+                    ),
+                )
+            )
+
+        current_hwnd = (
+            self._foreground_window_handle()
+        )
+
+        if (
+            current_hwnd
+            == target.hwnd
+        ):
+            return (
+                UIAutomationFocusResult(
+                    status="already_focused",
+
+                    window=target,
+
+                    candidates=(
+                        target,
+                    ),
+
+                    reason=(
+                        "The expected application "
+                        "is already in the "
+                        "foreground."
+                    ),
+                )
+            )
+
+        try:
+            if (
+                target.minimized
+            ):
+                win32gui.ShowWindow(
+                    target.hwnd,
+                    win32con.SW_RESTORE,
+                )
+
+            wrapper = (
+                Desktop(
+                    backend="uia"
+                )
+                .window(
+                    handle=(
+                        target.hwnd
+                    )
+                )
+                .wrapper_object()
+            )
+
+            # pywinauto's set_focus() is preferable to
+            # blind coordinate interaction. If Windows
+            # rejects it, SetForegroundWindow is tried as
+            # a second OS-level request. No keyboard or
+            # mouse workaround is used.
+            try:
+                wrapper.set_focus()
+
+            except Exception:
+                win32gui.SetForegroundWindow(
+                    target.hwnd
+                )
+
+        except Exception as error:
+            print(
+                (
+                    "UI Automation focus request "
+                    "failed: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                UIAutomationFocusResult(
+                    status="error",
+
+                    window=None,
+
+                    candidates=(
+                        target,
+                    ),
+
+                    reason=(
+                        "Windows could not safely "
+                        "focus the expected "
+                        "application."
+                    ),
+                )
+            )
+
+        timeout = (
+            self.FOCUS_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else max(
+                0.0,
+                float(
+                    timeout_seconds
+                ),
+            )
+        )
+
+        deadline = (
+            time.monotonic()
+            + timeout
+        )
+
+        while (
+            True
+        ):
+            foreground_hwnd = (
+                self._foreground_window_handle()
+            )
+
+            if (
+                foreground_hwnd
+                == target.hwnd
+            ):
+                verified = (
+                    self._build_window_info(
+                        target.hwnd
+                    )
+                )
+
+                if (
+                    verified
+                    is None
+                ):
+                    return (
+                        UIAutomationFocusResult(
+                            status="error",
+
+                            window=None,
+
+                            candidates=(),
+
+                            reason=(
+                                "The application "
+                                "window disappeared "
+                                "during focus recovery."
+                            ),
+                        )
+                    )
+
+                if not (
+                    self._same_window_identity(
+                        target,
+                        verified,
+                    )
+                ):
+                    return (
+                        UIAutomationFocusResult(
+                            status="mismatch",
+
+                            window=None,
+
+                            candidates=(
+                                verified,
+                            ),
+
+                            reason=(
+                                "The focused window "
+                                "identity changed during "
+                                "focus recovery."
+                            ),
+                        )
+                    )
+
+                if not (
+                    self._window_matches_constraints(
+                        window=verified,
+                        process_names=(
+                            normalized_process_names
+                        ),
+                        title=(
+                            normalized_title
+                        ),
+                    )
+                ):
+                    return (
+                        UIAutomationFocusResult(
+                            status="mismatch",
+
+                            window=None,
+
+                            candidates=(
+                                verified,
+                            ),
+
+                            reason=(
+                                "The focused window no "
+                                "longer matches the "
+                                "expected application."
+                            ),
+                        )
+                    )
+
+                return (
+                    UIAutomationFocusResult(
+                        status="focused",
+
+                        window=verified,
+
+                        candidates=(
+                            verified,
+                        ),
+
+                        reason=(
+                            "The expected application "
+                            "was safely restored to "
+                            "the foreground."
+                        ),
+                    )
+                )
+
+            if (
+                time.monotonic()
+                >= deadline
+            ):
+                break
+
+            time.sleep(
+                self.FOCUS_POLL_INTERVAL_SECONDS
+            )
+
+        return (
+            UIAutomationFocusResult(
+                status="timeout",
+
+                window=None,
+
+                candidates=(
+                    target,
+                ),
+
+                reason=(
+                    "Timed out waiting for the "
+                    "expected application to "
+                    "become the foreground window."
+                ),
+            )
+        )
+
+    # ==================================================
+    # PUBLIC — RESOLVE + RECOVER FOCUS
+    # ==================================================
+
+    def recover_focus(
+        self,
+        *,
+        process_names: tuple[
+            str,
+            ...,
+        ] = (),
+        title: str | None = None,
+        preferred_hwnd: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> UIAutomationFocusResult:
+        resolution = (
+            self.resolve_window(
+                process_names=(
+                    process_names
+                ),
+                title=(
+                    title
+                ),
+                preferred_hwnd=(
+                    preferred_hwnd
+                ),
+            )
+        )
+
+        if not (
+            resolution.resolved
+        ):
+            return (
+                UIAutomationFocusResult(
+                    status=(
+                        resolution.status
+                    ),
+
+                    window=None,
+
+                    candidates=(
+                        resolution
+                        .candidates
+                    ),
+
+                    reason=(
+                        resolution.reason
+                    ),
+                )
+            )
+
+        window = (
+            resolution.window
+        )
+
+        if (
+            window
+            is None
+        ):
+            return (
+                UIAutomationFocusResult(
+                    status="error",
+
+                    window=None,
+
+                    candidates=(),
+
+                    reason=(
+                        "Window resolution returned "
+                        "no usable window."
+                    ),
+                )
+            )
+
+        return (
+            self.focus_window(
+                window.hwnd,
+
+                expected_process_names=(
+                    process_names
+                ),
+
+                expected_title=(
+                    title
+                ),
+
+                timeout_seconds=(
+                    timeout_seconds
+                ),
+            )
+        )
+
     # ==================================================
     # PUBLIC — FIND TARGET
     # ==================================================
@@ -452,6 +1319,456 @@ class UIAutomationService:
 
         return (
             resolution.candidates
+        )
+
+    # ==================================================
+    # FOREGROUND WINDOW HANDLE
+    # ==================================================
+
+    def _foreground_window_handle(
+        self,
+    ) -> int:
+        try:
+            return int(
+                win32gui
+                .GetForegroundWindow()
+            )
+
+        except Exception:
+            return 0
+
+    # ==================================================
+    # ENUMERATE TOP-LEVEL WINDOWS
+    # ==================================================
+
+    def _enumerate_top_level_windows(
+        self,
+    ) -> list[
+        UIAutomationWindow
+    ]:
+        handles: list[
+            int
+        ] = []
+
+        def collect(
+            hwnd: int,
+            _,
+        ) -> bool:
+            handles.append(
+                int(
+                    hwnd
+                )
+            )
+
+            return True
+
+        win32gui.EnumWindows(
+            collect,
+            None,
+        )
+
+        windows: list[
+            UIAutomationWindow
+        ] = []
+
+        for hwnd in (
+            handles
+        ):
+            window = (
+                self._build_window_info(
+                    hwnd
+                )
+            )
+
+            if (
+                window
+                is not None
+            ):
+                windows.append(
+                    window
+                )
+
+        return (
+            windows
+        )
+
+    # ==================================================
+    # BUILD TOP-LEVEL WINDOW INFO
+    # ==================================================
+
+    def _build_window_info(
+        self,
+        hwnd: int,
+    ) -> UIAutomationWindow | None:
+        try:
+            if not (
+                hwnd
+            ):
+                return None
+
+            if not (
+                win32gui.IsWindow(
+                    hwnd
+                )
+            ):
+                return None
+
+            visible = bool(
+                win32gui.IsWindowVisible(
+                    hwnd
+                )
+            )
+
+            if not (
+                visible
+            ):
+                return None
+
+            enabled = bool(
+                win32gui.IsWindowEnabled(
+                    hwnd
+                )
+            )
+
+            if not (
+                enabled
+            ):
+                return None
+
+            title = (
+                win32gui
+                .GetWindowText(
+                    hwnd
+                )
+                .strip()
+            )
+
+            (
+                _,
+                process_id,
+            ) = (
+                win32process
+                .GetWindowThreadProcessId(
+                    hwnd
+                )
+            )
+
+            if not (
+                process_id
+            ):
+                return None
+
+            process = (
+                psutil.Process(
+                    process_id
+                )
+            )
+
+            process_name = (
+                process.name()
+                or ""
+            ).strip()
+
+            if not (
+                process_name
+            ):
+                return None
+
+            (
+                left,
+                top,
+                right,
+                bottom,
+            ) = (
+                win32gui.GetWindowRect(
+                    hwnd
+                )
+            )
+
+            left = int(
+                left
+            )
+
+            top = int(
+                top
+            )
+
+            right = int(
+                right
+            )
+
+            bottom = int(
+                bottom
+            )
+
+            if (
+                right
+                <= left
+                or
+                bottom
+                <= top
+            ):
+                return None
+
+            minimized = bool(
+                win32gui.IsIconic(
+                    hwnd
+                )
+            )
+
+            return (
+                UIAutomationWindow(
+                    hwnd=(
+                        int(
+                            hwnd
+                        )
+                    ),
+
+                    title=title,
+
+                    process_id=(
+                        int(
+                            process_id
+                        )
+                    ),
+
+                    process_name=(
+                        process_name
+                    ),
+
+                    left=left,
+                    top=top,
+                    right=right,
+                    bottom=bottom,
+
+                    visible=visible,
+                    enabled=enabled,
+                    minimized=(
+                        minimized
+                    ),
+                )
+            )
+
+        except (
+            psutil.NoSuchProcess,
+            psutil.AccessDenied,
+            psutil.ZombieProcess,
+            OSError,
+        ):
+            return None
+
+        except Exception:
+            return None
+
+    # ==================================================
+    # WINDOW CONSTRAINT MATCH
+    # ==================================================
+
+    def _window_matches_constraints(
+        self,
+        *,
+        window: UIAutomationWindow,
+        process_names: frozenset[
+            str
+        ],
+        title: str,
+    ) -> bool:
+        if not (
+            window.visible
+            and window.enabled
+        ):
+            return False
+
+        if (
+            process_names
+            and window.process_name
+            .strip()
+            .lower()
+            not in process_names
+        ):
+            return False
+
+        if (
+            title
+        ):
+            normalized_window_title = (
+                self._normalize_text(
+                    window.title
+                )
+            )
+
+            if not (
+                normalized_window_title
+            ):
+                return False
+
+            if (
+                normalized_window_title
+                != title
+                and title
+                not in normalized_window_title
+            ):
+                return False
+
+        return True
+
+    # ==================================================
+    # WINDOW MATCH SCORE
+    # ==================================================
+
+    def _window_match_score(
+        self,
+        *,
+        window: UIAutomationWindow,
+        title: str,
+    ) -> int:
+        if not (
+            title
+        ):
+            return 1
+
+        normalized_window_title = (
+            self._normalize_text(
+                window.title
+            )
+        )
+
+        if (
+            normalized_window_title
+            == title
+        ):
+            return 3
+
+        if (
+            title
+            in normalized_window_title
+        ):
+            return 2
+
+        return 0
+
+    # ==================================================
+    # DEDUPLICATE WINDOWS
+    # ==================================================
+
+    def _deduplicate_windows(
+        self,
+        windows: list[
+            UIAutomationWindow
+        ],
+    ) -> list[
+        UIAutomationWindow
+    ]:
+        unique: list[
+            UIAutomationWindow
+        ] = []
+
+        seen: set[
+            int
+        ] = set()
+
+        for window in (
+            windows
+        ):
+            if (
+                window.hwnd
+                in seen
+            ):
+                continue
+
+            seen.add(
+                window.hwnd
+            )
+
+            unique.append(
+                window
+            )
+
+        return (
+            unique
+        )
+
+    # ==================================================
+    # SAME WINDOW IDENTITY
+    # ==================================================
+
+    def _same_window_identity(
+        self,
+        first: UIAutomationWindow,
+        second: UIAutomationWindow,
+    ) -> bool:
+        return (
+            first.hwnd
+            == second.hwnd
+            and
+            first.process_id
+            == second.process_id
+            and
+            first.process_name
+            .strip()
+            .lower()
+            ==
+            second.process_name
+            .strip()
+            .lower()
+        )
+
+    # ==================================================
+    # WINDOW QUERY TEXT
+    # ==================================================
+
+    def _window_query_text(
+        self,
+        *,
+        process_names: frozenset[
+            str
+        ],
+        title: str,
+        preferred_hwnd: int | None,
+    ) -> str:
+        parts: list[
+            str
+        ] = []
+
+        if (
+            process_names
+        ):
+            parts.append(
+                (
+                    "process="
+                    + ",".join(
+                        sorted(
+                            process_names
+                        )
+                    )
+                )
+            )
+
+        if (
+            title
+        ):
+            parts.append(
+                (
+                    "title="
+                    f"{title}"
+                )
+            )
+
+        if (
+            preferred_hwnd
+        ):
+            parts.append(
+                (
+                    "hwnd="
+                    f"{preferred_hwnd}"
+                )
+            )
+
+        return (
+            "; ".join(
+                parts
+            )
+            or "unspecified"
         )
 
     # ==================================================
