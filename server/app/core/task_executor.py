@@ -1,4 +1,5 @@
 import inspect
+import time
 
 from dataclasses import (
     dataclass,
@@ -112,6 +113,20 @@ class TaskExecutor:
             "InputControlSkill",
             "UIAutomationClickSkill",
         }
+    )
+
+    WORKFLOW_UI_RETRY_ATTEMPTS = 1
+    WORKFLOW_UI_RETRY_DELAY_SECONDS = 0.20
+
+    RETRYABLE_UI_CLICK_MESSAGES = (
+        "i couldn't find a unique visible ui automation target",
+        "the active window changed while i was locating the target",
+        "the active window changed before the target could be clicked",
+        "the active window changed before the target could be revalidated",
+        "the active window changed while the target was being revalidated",
+        "the active window changed at the final safety check",
+        "the target disappeared before the click could be verified",
+        "the screen changed before i could safely click the target",
     )
 
     # =====================================================
@@ -564,6 +579,71 @@ class TaskExecutor:
                 )
                 .strip()
             )
+
+            # =================================================
+            # BOUNDED WORKFLOW-LEVEL UI CLICK RECOVERY
+            # =================================================
+
+            if (
+                actual_handler
+                == "UIAutomationClickSkill"
+                and not self._ui_click_response_succeeded(
+                    clean_response
+                )
+                and self._ui_click_response_retryable(
+                    clean_response
+                )
+                and active_focus_owner
+                is not None
+                and active_focus_context
+                is not None
+            ):
+                (
+                    retry_response,
+                    retry_runtime_output,
+                    retry_ok,
+                    retry_reason,
+                ) = (
+                    self._retry_ui_click_step(
+                        skill=skill,
+                        step=step,
+                        resolutions=(
+                            resolutions
+                        ),
+                        focus_owner=(
+                            active_focus_owner
+                        ),
+                        focus_context=(
+                            active_focus_context
+                        ),
+                    )
+                )
+
+                if (
+                    retry_ok
+                ):
+                    clean_response = (
+                        str(
+                            retry_response
+                        )
+                        .strip()
+                    )
+
+                    if (
+                        retry_runtime_output
+                        is not None
+                    ):
+                        explicit_runtime_output = (
+                            retry_runtime_output
+                        )
+
+                elif (
+                    retry_reason
+                ):
+                    clean_response = (
+                        retry_reason
+                        .strip()
+                    )
 
             # =================================================
             # GUARDED UI CLICK OUTCOME
@@ -1485,6 +1565,192 @@ class TaskExecutor:
         return (
             recovered,
             reason,
+        )
+
+    # =====================================================
+    # RETRYABLE UI CLICK RESPONSE
+    # =====================================================
+
+    def _ui_click_response_retryable(
+        self,
+        response: str,
+    ) -> bool:
+        normalized = (
+            response
+            .strip()
+            .lower()
+        )
+
+        if not (
+            normalized
+        ):
+            return False
+
+        return any(
+            marker
+            in normalized
+
+            for marker
+            in self.RETRYABLE_UI_CLICK_MESSAGES
+        )
+
+    # =====================================================
+    # RETRY UI CLICK STEP
+    # =====================================================
+
+    def _retry_ui_click_step(
+        self,
+        *,
+        skill: object,
+        step: ValidatedStep,
+        resolutions: tuple[
+            ReferenceResolution,
+            ...
+        ],
+        focus_owner: object,
+        focus_context: object,
+    ) -> tuple[
+        str,
+        StepRuntimeOutput | None,
+        bool,
+        str,
+    ]:
+        attempts = max(
+            0,
+            int(
+                self.WORKFLOW_UI_RETRY_ATTEMPTS
+            ),
+        )
+
+        if (
+            attempts
+            <= 0
+        ):
+            return (
+                "",
+                None,
+                False,
+                "",
+            )
+
+        last_response = ""
+
+        for _ in range(
+            attempts
+        ):
+            (
+                focus_ok,
+                focus_reason,
+            ) = (
+                self._recover_step_focus(
+                    owner=(
+                        focus_owner
+                    ),
+                    context=(
+                        focus_context
+                    ),
+                )
+            )
+
+            if not (
+                focus_ok
+            ):
+                reason = (
+                    focus_reason
+                    .strip()
+                )
+
+                if not (
+                    reason
+                ):
+                    reason = (
+                        "The expected application "
+                        "could not be safely restored "
+                        "before retrying the UI action."
+                    )
+
+                return (
+                    "",
+                    None,
+                    False,
+                    reason,
+                )
+
+            time.sleep(
+                self.WORKFLOW_UI_RETRY_DELAY_SECONDS
+            )
+
+            try:
+                (
+                    retry_response,
+                    retry_runtime_output,
+                ) = (
+                    self._execute_step(
+                        skill=skill,
+                        step=step,
+                        resolutions=(
+                            resolutions
+                        ),
+                    )
+                )
+
+            except Exception as error:
+                print(
+                    (
+                        "Workflow UI click retry "
+                        f"failed for "
+                        f"{type(skill).__name__}: "
+                        f"{type(error).__name__}: "
+                        f"{error}"
+                    )
+                )
+
+                return (
+                    "",
+                    None,
+                    False,
+                    (
+                        "The UI action retry "
+                        "could not be completed safely."
+                    ),
+                )
+
+            last_response = (
+                str(
+                    retry_response
+                )
+                .strip()
+            )
+
+            if (
+                self._ui_click_response_succeeded(
+                    last_response
+                )
+            ):
+                return (
+                    last_response,
+                    retry_runtime_output,
+                    True,
+                    "",
+                )
+
+            if not (
+                self._ui_click_response_retryable(
+                    last_response
+                )
+            ):
+                return (
+                    last_response,
+                    retry_runtime_output,
+                    False,
+                    last_response,
+                )
+
+        return (
+            last_response,
+            None,
+            False,
+            last_response,
         )
 
     # =====================================================
