@@ -1,16 +1,34 @@
 import re
-from dataclasses import dataclass
+
+from dataclasses import (
+    dataclass,
+)
 
 
-@dataclass(frozen=True)
+# =========================================================
+# TASK STEP
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class TaskStep:
     index: int
     command: str
 
 
-@dataclass(frozen=True)
+# =========================================================
+# TASK PLAN
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
 class TaskPlan:
     original_command: str
+
     steps: tuple[
         TaskStep,
         ...
@@ -21,18 +39,49 @@ class TaskPlan:
         self,
     ) -> bool:
         return (
-            len(self.steps) > 1
+            len(
+                self.steps
+            )
+            > 1
         )
+
+
+# =========================================================
+# TASK PLANNER
+# =========================================================
 
 
 class TaskPlanner:
     MAX_STEPS = 8
 
-    DELIMITER = "|||JARVIS_STEP|||"
+    DELIMITER = (
+        "|||JARVIS_STEP|||"
+    )
 
-    # ==================================================
-    # STEP STARTS
-    # ==================================================
+    # =====================================================
+    # KNOWN ACTION STARTS
+    # =====================================================
+    #
+    # These are used only to determine whether punctuation,
+    # "and", "then", etc. actually separate two commands.
+    #
+    # IMPORTANT:
+    #
+    # "confirm" and "cancel" are included because safety
+    # confirmations must always become their own task step.
+    #
+    # Example:
+    #
+    # click delete button and confirm click abc123
+    #
+    # must become:
+    #
+    # 1. click delete button
+    # 2. confirm click abc123
+    #
+    # The validator can then enforce the separate-turn
+    # confirmation barrier.
+    # =====================================================
 
     STEP_START_PATTERN = (
         r"(?:"
@@ -85,6 +134,8 @@ class TaskPlanner:
         r"|scroll"
         r"|drag"
         r"|select"
+        r"|confirm"
+        r"|cancel"
         r"|explain"
         r"|summarize"
         r"|compare"
@@ -100,25 +151,57 @@ class TaskPlanner:
         r")\b"
     )
 
-    # ==================================================
+    # =====================================================
     # EXPLICIT SEQUENCE LANGUAGE
-    # ==================================================
+    # =====================================================
+    #
+    # A sequencing word is only treated as a separator when
+    # another recognized action follows it.
+    #
+    # This prevents accidental splitting of text such as:
+    #
+    # search next.js documentation
+    #
+    # because ".js documentation" is not another action.
+    # =====================================================
 
     SEQUENCE_PATTERN = re.compile(
-        r"\s*(?:"
-        r"\band\s+then\b"
-        r"|\bafter\s+that\b"
-        r"|\bonce\s+that\s+is\s+done\b"
-        r"|\bthen\b"
-        r"|\bfinally\b"
-        r"|\bnext\b"
-        r")\s*",
+        (
+            r"\s*"
+            r"(?:"
+            r"\band\s+then\b"
+            r"|\bafter\s+that\b"
+            r"|\bonce\s+that\s+is\s+done\b"
+            r"|\bafterwards?\b"
+            r"|\bthen\b"
+            r"|\bfinally\b"
+            r"|\bnext\b"
+            r")"
+            r"[\s,:;-]*"
+            r"(?="
+            + STEP_START_PATTERN
+            + r")"
+        ),
         flags=re.IGNORECASE,
     )
 
-    # ==================================================
+    # =====================================================
     # COMMA / SEMICOLON BETWEEN ACTIONS
-    # ==================================================
+    # =====================================================
+    #
+    # Examples:
+    #
+    # open chrome, search Python
+    #
+    # open notepad; type hello
+    #
+    # But:
+    #
+    # search React, Vue and Angular
+    #
+    # stays as one search request because "Vue" does not
+    # begin another recognized action.
+    # =====================================================
 
     COMMA_SEQUENCE_PATTERN = re.compile(
         (
@@ -131,9 +214,22 @@ class TaskPlanner:
         flags=re.IGNORECASE,
     )
 
-    # ==================================================
+    # =====================================================
     # PLAIN "AND" BETWEEN ACTIONS
-    # ==================================================
+    # =====================================================
+    #
+    # Examples:
+    #
+    # open notepad and type hello
+    #
+    # click delete and confirm click abc123
+    #
+    # But:
+    #
+    # search React and Vue
+    #
+    # remains one step.
+    # =====================================================
 
     ACTION_AND_PATTERN = re.compile(
         (
@@ -145,24 +241,27 @@ class TaskPlanner:
         flags=re.IGNORECASE,
     )
 
-    # ==================================================
+    # =====================================================
     # LEADING SEQUENCE WORDS
-    # ==================================================
+    # =====================================================
 
     LEADING_MARKERS = re.compile(
-        r"^(?:"
-        r"first(?:ly)?"
-        r"|next"
-        r"|then"
-        r"|finally"
-        r")"
-        r"[\s,:;-]*",
+        (
+            r"^(?:"
+            r"first(?:ly)?"
+            r"|next"
+            r"|then"
+            r"|finally"
+            r"|afterwards?"
+            r")"
+            r"[\s,:;-]*"
+        ),
         flags=re.IGNORECASE,
     )
 
-    # ==================================================
+    # =====================================================
     # PLAN
-    # ==================================================
+    # =====================================================
 
     def plan(
         self,
@@ -173,23 +272,33 @@ class TaskPlanner:
             .strip()
         )
 
-        if not original:
+        if not (
+            original
+        ):
             return TaskPlan(
                 original_command="",
                 steps=(),
             )
 
-        working = re.sub(
-            r"\s+",
-            " ",
-            original,
-        ).strip()
+        # Normalize repeated whitespace before attempting
+        # to detect step boundaries.
+        working = (
+            re.sub(
+                r"\s+",
+                " ",
+                original,
+            )
+            .strip()
+        )
 
-        # --------------------------------------------------
-        # Explicit sequencing
+        # =================================================
+        # EXPLICIT SEQUENCING
+        # =================================================
         #
-        # open chrome THEN search Python
-        # --------------------------------------------------
+        # open chrome then search Python
+        #
+        # open notepad and then type hello
+        # =================================================
 
         working = (
             self.SEQUENCE_PATTERN
@@ -199,15 +308,14 @@ class TaskPlanner:
             )
         )
 
-        # --------------------------------------------------
-        # Comma-separated actions
+        # =================================================
+        # COMMA / SEMICOLON SEQUENCING
+        # =================================================
         #
         # open chrome, search Python
         #
-        # But not:
-        #
-        # search React, Vue and Angular
-        # --------------------------------------------------
+        # open notepad; type hello
+        # =================================================
 
         working = (
             self.COMMA_SEQUENCE_PATTERN
@@ -217,15 +325,14 @@ class TaskPlanner:
             )
         )
 
-        # --------------------------------------------------
-        # Natural "and" between commands
+        # =================================================
+        # NATURAL "AND" SEQUENCING
+        # =================================================
         #
-        # open YouTube and search for tutorial
+        # open YouTube and search tutorial
         #
-        # But not:
-        #
-        # search React and Vue
-        # --------------------------------------------------
+        # click delete and confirm click abc123
+        # =================================================
 
         working = (
             self.ACTION_AND_PATTERN
@@ -235,6 +342,10 @@ class TaskPlanner:
             )
         )
 
+        # =================================================
+        # SPLIT
+        # =================================================
+
         raw_parts = (
             working
             .split(
@@ -242,16 +353,24 @@ class TaskPlanner:
             )
         )
 
-        cleaned_parts: list[str] = []
+        cleaned_parts: list[
+            str
+        ] = []
 
-        for part in raw_parts:
+        for part in (
+            raw_parts
+        ):
             cleaned = (
                 part
                 .strip()
-                .strip(",;")
+                .strip(
+                    ",;"
+                )
                 .strip()
             )
 
+            # Remove leftover sequencing markers from the
+            # beginning of a newly created step.
             cleaned = (
                 self.LEADING_MARKERS
                 .sub(
@@ -263,25 +382,43 @@ class TaskPlanner:
 
             cleaned = (
                 cleaned
-                .strip(",;")
+                .strip(
+                    ",;"
+                )
                 .strip()
             )
 
-            if not cleaned:
+            if not (
+                cleaned
+            ):
                 continue
 
             cleaned_parts.append(
                 cleaned
             )
 
-        if not cleaned_parts:
+        if not (
+            cleaned_parts
+        ):
             return TaskPlan(
-                original_command=original,
+                original_command=(
+                    original
+                ),
                 steps=(),
             )
 
+        # =================================================
+        # STEP LIMIT
+        # =================================================
+        #
+        # Prevent one command from producing an excessively
+        # large deterministic execution chain.
+        # =================================================
+
         if (
-            len(cleaned_parts)
+            len(
+                cleaned_parts
+            )
             > self.MAX_STEPS
         ):
             cleaned_parts = (
@@ -290,15 +427,19 @@ class TaskPlanner:
                 ]
             )
 
-        # ==================================================
-        # APPLY CONTEXT BETWEEN STEPS
-        # ==================================================
+        # =================================================
+        # APPLY CROSS-STEP CONTEXT
+        # =================================================
 
-        cleaned_parts = (
+        contextual_parts = (
             self._apply_step_context(
                 cleaned_parts
             )
         )
+
+        # =================================================
+        # BUILD IMMUTABLE PLAN
+        # =================================================
 
         steps = tuple(
             TaskStep(
@@ -307,31 +448,42 @@ class TaskPlanner:
             )
             for index, step
             in enumerate(
-                cleaned_parts,
+                contextual_parts,
                 start=1,
             )
         )
 
         return TaskPlan(
-            original_command=original,
+            original_command=(
+                original
+            ),
             steps=steps,
         )
 
-    # ==================================================
+    # =====================================================
     # STEP CONTEXT
-    # ==================================================
+    # =====================================================
 
     def _apply_step_context(
         self,
-        steps: list[str],
-    ) -> list[str]:
-        contextual_steps: list[str] = []
+        steps: list[
+            str
+        ],
+    ) -> list[
+        str
+    ]:
+        contextual_steps: list[
+            str
+        ] = []
 
         active_search_provider: (
-            str | None
+            str
+            | None
         ) = None
 
-        for step in steps:
+        for step in (
+            steps
+        ):
             cleaned = (
                 step
                 .strip()
@@ -340,13 +492,15 @@ class TaskPlanner:
             normalized = (
                 cleaned
                 .lower()
-                .rstrip("?.!")
+                .rstrip(
+                    "?.!"
+                )
                 .strip()
             )
 
-            # ==================================================
-            # OPEN / LAUNCH PROVIDERS
-            # ==================================================
+            # =================================================
+            # OPEN / LAUNCH YOUTUBE
+            # =================================================
 
             if normalized in {
                 "open youtube",
@@ -362,6 +516,10 @@ class TaskPlanner:
                 )
 
                 continue
+
+            # =================================================
+            # OPEN / LAUNCH GOOGLE / CHROME
+            # =================================================
 
             if normalized in {
                 "open chrome",
@@ -381,9 +539,9 @@ class TaskPlanner:
 
                 continue
 
-            # ==================================================
+            # =================================================
             # EXPLICIT YOUTUBE SEARCH
-            # ==================================================
+            # =================================================
 
             if (
                 normalized.startswith(
@@ -403,9 +561,9 @@ class TaskPlanner:
 
                 continue
 
-            # ==================================================
+            # =================================================
             # EXPLICIT GOOGLE SEARCH
-            # ==================================================
+            # =================================================
 
             if (
                 normalized.startswith(
@@ -425,9 +583,9 @@ class TaskPlanner:
 
                 continue
 
-            # ==================================================
+            # =================================================
             # GENERIC SEARCH
-            # ==================================================
+            # =================================================
 
             generic_prefixes = (
                 "search for ",
@@ -435,12 +593,17 @@ class TaskPlanner:
             )
 
             matched_prefix: (
-                str | None
+                str
+                | None
             ) = None
 
-            for prefix in generic_prefixes:
-                if normalized.startswith(
-                    prefix
+            for prefix in (
+                generic_prefixes
+            ):
+                if (
+                    normalized.startswith(
+                        prefix
+                    )
                 ):
                     matched_prefix = (
                         prefix
@@ -448,25 +611,40 @@ class TaskPlanner:
 
                     break
 
-            # --------------------------------------------------
-            # Generic search after YouTube inherits YouTube.
-            # --------------------------------------------------
+            # -------------------------------------------------
+            # YouTube context inheritance
+            # -------------------------------------------------
+            #
+            # open youtube and search cats
+            #
+            # becomes:
+            #
+            # 1. open youtube
+            # 2. search youtube for cats
+            # -------------------------------------------------
 
             if (
-                matched_prefix is not None
+                matched_prefix
+                is not None
                 and active_search_provider
                 == "youtube"
             ):
                 query = (
                     cleaned[
-                        len(matched_prefix):
+                        len(
+                            matched_prefix
+                        ):
                     ]
                     .strip()
-                    .rstrip("?.!")
+                    .rstrip(
+                        "?.!"
+                    )
                     .strip()
                 )
 
-                if query:
+                if (
+                    query
+                ):
                     contextual_steps.append(
                         (
                             "search youtube for "
@@ -481,17 +659,24 @@ class TaskPlanner:
 
                 continue
 
-            # --------------------------------------------------
-            # Generic search after Chrome/Google remains
-            # generic because SearchSkill already defaults
-            # generic web search to Google.
-            # --------------------------------------------------
+            # -------------------------------------------------
+            # Google / Chrome context
+            # -------------------------------------------------
+            #
+            # Generic SearchSkill already defaults normal web
+            # searches appropriately, so no command rewrite is
+            # necessary here.
+            # -------------------------------------------------
 
             contextual_steps.append(
                 cleaned
             )
 
-        return contextual_steps
+        return (
+            contextual_steps
+        )
 
 
-task_planner = TaskPlanner()
+task_planner = (
+    TaskPlanner()
+)
