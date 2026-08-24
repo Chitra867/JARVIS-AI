@@ -107,6 +107,13 @@ class TaskExecutor:
         "unable to ",
     )
 
+    FOCUS_SENSITIVE_HANDLERS = frozenset(
+        {
+            "InputControlSkill",
+            "UIAutomationClickSkill",
+        }
+    )
+
     # =====================================================
     # EXECUTE RAW COMMAND
     # =====================================================
@@ -161,6 +168,16 @@ class TaskExecutor:
         executed_steps: list[
             StepExecutionResult
         ] = []
+
+        active_focus_owner: (
+            object
+            | None
+        ) = None
+
+        active_focus_context: (
+            object
+            | None
+        ) = None
 
         # =================================================
         # EXECUTE IN ORDER
@@ -322,6 +339,111 @@ class TaskExecutor:
                         blocked=False,
                     )
                 )
+
+            # =================================================
+            # RESET CONTEXT FOR A NEW LAUNCH
+            # =================================================
+
+            if (
+                actual_handler
+                == "AppLauncherSkill"
+            ):
+                active_focus_owner = (
+                    None
+                )
+
+                active_focus_context = (
+                    None
+                )
+
+            # =================================================
+            # RECOVER EXPECTED APPLICATION FOCUS
+            # =================================================
+            #
+            # Only desktop actions that depend on the active
+            # foreground window are bound to launch focus
+            # context.
+            #
+            # If another application stole focus after the
+            # launch became ready, recover the exact verified
+            # application window before performing the action.
+            # =================================================
+
+            if (
+                active_focus_owner
+                is not None
+                and active_focus_context
+                is not None
+                and actual_handler
+                in self.FOCUS_SENSITIVE_HANDLERS
+            ):
+                (
+                    focus_ok,
+                    focus_reason,
+                ) = (
+                    self._recover_step_focus(
+                        owner=(
+                            active_focus_owner
+                        ),
+                        context=(
+                            active_focus_context
+                        ),
+                    )
+                )
+
+                if not (
+                    focus_ok
+                ):
+                    failure_response = (
+                        focus_reason
+                        .strip()
+                    )
+
+                    if not (
+                        failure_response
+                    ):
+                        failure_response = (
+                            "The expected application "
+                            "could not be safely restored "
+                            "before the next desktop action."
+                        )
+
+                    executed_steps.append(
+                        StepExecutionResult(
+                            index=(
+                                step.index
+                            ),
+                            command=(
+                                step.command
+                            ),
+                            handler=(
+                                actual_handler
+                            ),
+                            status=(
+                                ExecutionStatus
+                                .BLOCKED
+                            ),
+                            response=(
+                                failure_response
+                            ),
+                        )
+                    )
+
+                    return (
+                        self._failure_result(
+                            plan=plan,
+                            executed_steps=(
+                                executed_steps
+                            ),
+                            runtime_context=(
+                                runtime_context
+                            ),
+                            stopped_at=(
+                                step.index
+                            ),
+                            blocked=True,
+                        )
+                    )
 
             # =================================================
             # RESOLVE RUNTIME REFERENCES
@@ -642,6 +764,27 @@ class TaskExecutor:
                             ),
                             blocked=False,
                         )
+                    )
+
+                captured_focus_context = (
+                    self._capture_step_focus_context(
+                        skill=skill,
+                        command=(
+                            step.command
+                        ),
+                    )
+                )
+
+                if (
+                    captured_focus_context
+                    is not None
+                ):
+                    active_focus_owner = (
+                        skill
+                    )
+
+                    active_focus_context = (
+                        captured_focus_context
                     )
 
             # =================================================
@@ -1135,6 +1278,212 @@ class TaskExecutor:
 
         return (
             ready,
+            reason,
+        )
+
+    # =====================================================
+    # CAPTURE STEP FOCUS CONTEXT
+    # =====================================================
+
+    def _capture_step_focus_context(
+        self,
+        skill: object,
+        command: str,
+    ) -> object | None:
+        try:
+            static_getter = (
+                inspect.getattr_static(
+                    skill,
+                    "get_focus_context",
+                    None,
+                )
+            )
+
+        except Exception:
+            return None
+
+        if (
+            static_getter
+            is None
+        ):
+            return None
+
+        getter = (
+            getattr(
+                skill,
+                "get_focus_context",
+                None,
+            )
+        )
+
+        if not callable(
+            getter
+        ):
+            return None
+
+        try:
+            return (
+                getter(
+                    command
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Focus context capture failed "
+                    f"for {type(skill).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return None
+
+    # =====================================================
+    # RECOVER STEP FOCUS
+    # =====================================================
+
+    def _recover_step_focus(
+        self,
+        owner: object,
+        context: object,
+    ) -> tuple[
+        bool,
+        str,
+    ]:
+        try:
+            static_recoverer = (
+                inspect.getattr_static(
+                    owner,
+                    "recover_focus_context",
+                    None,
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Focus recovery inspection "
+                    f"failed for "
+                    f"{type(owner).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                False,
+                (
+                    "The application focus recovery "
+                    "hook could not be inspected."
+                ),
+            )
+
+        if (
+            static_recoverer
+            is None
+        ):
+            return (
+                False,
+                (
+                    "The application focus recovery "
+                    "hook is unavailable."
+                ),
+            )
+
+        recoverer = (
+            getattr(
+                owner,
+                "recover_focus_context",
+                None,
+            )
+        )
+
+        if not callable(
+            recoverer
+        ):
+            return (
+                False,
+                (
+                    "The application focus recovery "
+                    "hook is not callable."
+                ),
+            )
+
+        try:
+            result = (
+                recoverer(
+                    context
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Application focus recovery "
+                    f"failed for "
+                    f"{type(owner).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                False,
+                (
+                    "The expected application "
+                    "could not be safely restored."
+                ),
+            )
+
+        if (
+            not isinstance(
+                result,
+                tuple,
+            )
+            or len(
+                result
+            )
+            != 2
+        ):
+            return (
+                False,
+                (
+                    "The application focus recovery "
+                    "hook returned an invalid result."
+                ),
+            )
+
+        recovered = (
+            result[
+                0
+            ]
+        )
+
+        reason = (
+            str(
+                result[
+                    1
+                ]
+            )
+            .strip()
+        )
+
+        if not isinstance(
+            recovered,
+            bool,
+        ):
+            return (
+                False,
+                (
+                    "The application focus recovery "
+                    "hook returned an invalid status."
+                ),
+            )
+
+        return (
+            recovered,
             reason,
         )
 

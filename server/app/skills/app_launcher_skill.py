@@ -16,6 +16,10 @@ import psutil
 import win32gui
 import win32process
 
+from app.core.ui_automation import (
+    ui_automation_service,
+)
+
 from app.skills.base import (
     Skill,
 )
@@ -39,6 +43,32 @@ class LaunchReadiness:
     ]
 
     previous_foreground_hwnd: int
+
+    created_at: float
+
+
+# =========================================================
+# LAUNCH FOCUS CONTEXT
+# =========================================================
+
+
+@dataclass(
+    frozen=True
+)
+class LaunchFocusContext:
+    command: str
+    target: str
+
+    hwnd: int
+
+    process_id: int
+    process_name: str
+
+    process_names: frozenset[
+        str
+    ]
+
+    title: str
 
     created_at: float
 
@@ -350,6 +380,11 @@ class AppLauncherSkill(
             | None
         ) = None
 
+        self._focus_context: (
+            LaunchFocusContext
+            | None
+        ) = None
+
     # =====================================================
     # ROUTING
     # =====================================================
@@ -390,8 +425,13 @@ class AppLauncherSkill(
         )
 
         # Any new launcher command invalidates an older
-        # readiness observation.
+        # readiness observation and its associated workflow
+        # focus context.
         self._last_launch = (
+            None
+        )
+
+        self._focus_context = (
             None
         )
 
@@ -763,6 +803,17 @@ class AppLauncherSkill(
                     stable_count
                     >= self.READINESS_STABLE_POLLS
                 ):
+                    self._focus_context = (
+                        self._capture_focus_context(
+                            observation=(
+                                observation
+                            ),
+                            hwnd=(
+                                stable_hwnd
+                            ),
+                        )
+                    )
+
                     self._last_launch = (
                         None
                     )
@@ -797,6 +848,282 @@ class AppLauncherSkill(
                 f"{observation.target} "
                 "to become ready."
             ),
+        )
+
+    # =====================================================
+    # GET WORKFLOW FOCUS CONTEXT
+    # =====================================================
+
+    def get_focus_context(
+        self,
+        command: str,
+    ) -> LaunchFocusContext | None:
+        context = (
+            self._focus_context
+        )
+
+        if (
+            context
+            is None
+        ):
+            return None
+
+        if not (
+            self._same_command(
+                command,
+                context.command,
+            )
+        ):
+            return None
+
+        return (
+            context
+        )
+
+    # =====================================================
+    # RECOVER WORKFLOW FOCUS
+    # =====================================================
+
+    def recover_focus_context(
+        self,
+        context: LaunchFocusContext,
+    ) -> tuple[
+        bool,
+        str,
+    ]:
+        if not isinstance(
+            context,
+            LaunchFocusContext,
+        ):
+            return (
+                False,
+                (
+                    "The application focus context "
+                    "is invalid."
+                ),
+            )
+
+        # -------------------------------------------------
+        # If the current foreground window still belongs
+        # to the exact same process, do not force the main
+        # window to the front.
+        #
+        # This preserves legitimate same-process UI states
+        # such as menus, popups and tab surfaces.
+        # -------------------------------------------------
+
+        foreground = (
+            ui_automation_service
+            .get_foreground_window_info()
+        )
+
+        if (
+            foreground
+            is not None
+            and foreground.process_id
+            == context.process_id
+            and foreground.process_name
+            .strip()
+            .lower()
+            == context.process_name
+            .strip()
+            .lower()
+        ):
+            return (
+                True,
+                (
+                    "The expected application "
+                    "already owns the foreground."
+                ),
+            )
+
+        # -------------------------------------------------
+        # Otherwise recover the exact verified HWND.
+        #
+        # Do not search for or guess another same-process
+        # window if the original HWND is gone.
+        # -------------------------------------------------
+
+        result = (
+            ui_automation_service
+            .focus_window(
+                context.hwnd,
+
+                expected_process_names=(
+                    tuple(
+                        sorted(
+                            context.process_names
+                        )
+                    )
+                ),
+            )
+        )
+
+        if not (
+            result.success
+        ):
+            return (
+                False,
+                (
+                    result.reason
+                    or
+                    "The expected application "
+                    "could not be safely restored."
+                ),
+            )
+
+        window = (
+            result.window
+        )
+
+        if (
+            window
+            is None
+        ):
+            return (
+                False,
+                (
+                    "Focus recovery returned no "
+                    "verified application window."
+                ),
+            )
+
+        if (
+            window.hwnd
+            != context.hwnd
+            or window.process_id
+            != context.process_id
+            or window.process_name
+            .strip()
+            .lower()
+            != context.process_name
+            .strip()
+            .lower()
+        ):
+            return (
+                False,
+                (
+                    "The recovered window no longer "
+                    "matches the originally verified "
+                    "application."
+                ),
+            )
+
+        return (
+            True,
+            (
+                "The expected application was "
+                "safely restored to the foreground."
+            ),
+        )
+
+    # =====================================================
+    # CAPTURE WORKFLOW FOCUS CONTEXT
+    # =====================================================
+
+    def _capture_focus_context(
+        self,
+        *,
+        observation: LaunchReadiness,
+        hwnd: int | None,
+    ) -> LaunchFocusContext | None:
+        if not (
+            hwnd
+        ):
+            return None
+
+        window = (
+            ui_automation_service
+            .get_foreground_window_info()
+        )
+
+        if (
+            window
+            is None
+        ):
+            return None
+
+        if (
+            window.hwnd
+            != hwnd
+        ):
+            return None
+
+        process_name = (
+            window.process_name
+            .strip()
+            .lower()
+        )
+
+        if not (
+            process_name
+        ):
+            return None
+
+        if (
+            observation.process_names
+            and process_name
+            not in observation.process_names
+        ):
+            return None
+
+        process_names = (
+            observation.process_names
+        )
+
+        if not (
+            process_names
+        ):
+            process_names = (
+                frozenset(
+                    {
+                        process_name,
+                    }
+                )
+            )
+
+        return (
+            LaunchFocusContext(
+                command=(
+                    observation.command
+                ),
+
+                target=(
+                    observation.target
+                ),
+
+                hwnd=(
+                    window.hwnd
+                ),
+
+                process_id=(
+                    window.process_id
+                ),
+
+                process_name=(
+                    window.process_name
+                ),
+
+                process_names=(
+                    frozenset(
+                        name
+                        .strip()
+                        .lower()
+                        for name
+                        in process_names
+                        if name
+                        and name.strip()
+                    )
+                ),
+
+                title=(
+                    window.title
+                ),
+
+                created_at=(
+                    time.monotonic()
+                ),
+            )
         )
 
     # =====================================================
