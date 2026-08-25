@@ -3,11 +3,6 @@ from app.skills.file_dialog_skill import (
 )
 
 
-# ======================================================
-# HELPERS
-# ======================================================
-
-
 class ElementInfo:
     def __init__(
         self,
@@ -87,39 +82,21 @@ class FakeDialog:
         return self.controls
 
 
-# ======================================================
-# ROUTING
-# ======================================================
-
-
-def test_can_handle_open_and_save_commands():
+def test_can_handle_open_save_and_folder_commands():
     skill = FileDialogSkill()
 
-    assert (
-        skill.can_handle(
-            r"choose file C:\Temp\a.txt"
-        )
-        is True
+    assert skill.can_handle(
+        r"choose file C:\Temp\a.txt"
     )
-
-    assert (
-        skill.can_handle(
-            r"save file as C:\Temp\b.txt"
-        )
-        is True
+    assert skill.can_handle(
+        r"save file as C:\Temp\b.txt"
     )
-
-    assert (
-        skill.can_handle(
-            "open notepad"
-        )
-        is False
+    assert skill.can_handle(
+        r"choose folder C:\Temp"
     )
-
-
-# ======================================================
-# OPEN VALIDATION
-# ======================================================
+    assert not skill.can_handle(
+        "open notepad"
+    )
 
 
 def test_open_rejects_missing_file(
@@ -138,15 +115,7 @@ def test_open_rejects_missing_file(
     )
 
     assert result is not None
-    assert (
-        "does not exist"
-        in result.lower()
-    )
-
-
-# ======================================================
-# SAVE OVERWRITE PROTECTION
-# ======================================================
+    assert "does not exist" in result.lower()
 
 
 def test_save_rejects_existing_file(
@@ -169,15 +138,49 @@ def test_save_rejects_existing_file(
     )
 
     assert result is not None
-    assert (
-        "overwrite"
-        in result.lower()
+    assert "overwrite" in result.lower()
+
+
+def test_folder_rejects_missing_directory(
+    tmp_path,
+):
+    skill = FileDialogSkill()
+
+    missing = (
+        tmp_path
+        / "missing-folder"
     )
 
+    result = skill._validate_path(
+        mode="folder",
+        path=missing,
+    )
 
-# ======================================================
-# UNIQUE FILE NAME FIELD
-# ======================================================
+    assert result is not None
+    assert "does not exist" in result.lower()
+
+
+def test_folder_rejects_file_path(
+    tmp_path,
+):
+    skill = FileDialogSkill()
+
+    file_path = (
+        tmp_path
+        / "file.txt"
+    )
+
+    file_path.write_text(
+        "data"
+    )
+
+    result = skill._validate_path(
+        mode="folder",
+        path=file_path,
+    )
+
+    assert result is not None
+    assert "not a folder" in result.lower()
 
 
 def test_resolve_file_name_edit_requires_unique_match():
@@ -219,11 +222,6 @@ def test_resolve_file_name_edit_requires_unique_match():
     )
 
 
-# ======================================================
-# UNIQUE ACTION BUTTON
-# ======================================================
-
-
 def test_resolve_action_button_requires_exact_unique_name():
     skill = FileDialogSkill()
 
@@ -246,11 +244,6 @@ def test_resolve_action_button_requires_exact_unique_name():
         )
         is open_button
     )
-
-
-# ======================================================
-# WINDOWS NATIVE ACTION BUTTON
-# ======================================================
 
 
 def test_action_button_prefers_native_dialog_id_one():
@@ -288,15 +281,38 @@ def test_action_button_prefers_native_dialog_id_one():
         mode="open",
     )
 
-    assert (
-        result
-        is real_open_button
+    assert result is real_open_button
+
+
+def test_folder_action_button_uses_native_ok_button():
+    skill = FileDialogSkill()
+
+    other_ok = FakeControl(
+        name="OK",
+        control_type="Button",
+        automation_id="other",
     )
 
+    real_ok = FakeControl(
+        name="OK",
+        control_type="Button",
+        automation_id="1",
+    )
 
-# ======================================================
-# FULL OPEN FLOW
-# ======================================================
+    dialog = FakeDialog(
+        title="Browse For Folder",
+        controls=[
+            other_ok,
+            real_ok,
+        ],
+    )
+
+    result = skill._resolve_action_button(
+        dialog=dialog,
+        mode="folder",
+    )
+
+    assert result is real_ok
 
 
 def test_open_flow_sets_path_and_invokes_open(
@@ -356,28 +372,11 @@ def test_open_flow_sets_path_and_invokes_open(
         f"choose file {source}"
     )
 
-    assert (
-        response.startswith(
-            "Opened file "
-        )
+    assert response.startswith(
+        "Opened file "
     )
-
-    assert (
-        edit.value
-        == str(
-            source
-        )
-    )
-
-    assert (
-        button.invoked
-        is True
-    )
-
-
-# ======================================================
-# FULL SAVE FLOW
-# ======================================================
+    assert edit.value == str(source)
+    assert button.invoked is True
 
 
 def test_save_flow_sets_new_path_and_invokes_save(
@@ -433,20 +432,141 @@ def test_save_flow_sets_new_path_and_invokes_save(
         f"save file as {destination}"
     )
 
-    assert (
-        response.startswith(
-            "Saved file as "
-        )
+    assert response.startswith(
+        "Saved file as "
+    )
+    assert edit.value == str(destination)
+    assert button.invoked is True
+
+
+def test_folder_flow_selects_folder_and_invokes_ok(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+
+    folder = (
+        tmp_path
+        / "target"
     )
 
-    assert (
-        edit.value
-        == str(
-            destination
-        )
+    folder.mkdir()
+
+    button = FakeControl(
+        name="OK",
+        control_type="Button",
+        automation_id="1",
     )
 
-    assert (
-        button.invoked
-        is True
+    dialog = FakeDialog(
+        title="Browse For Folder",
+        controls=[
+            button,
+        ],
     )
+
+    monkeypatch.setattr(
+        skill,
+        "_foreground_hwnd",
+        lambda: 123,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_get_dialog",
+        lambda hwnd: dialog,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_select_folder_in_dialog",
+        lambda hwnd, path: True,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_wait_for_dialog_completion",
+        lambda hwnd: True,
+    )
+
+    response = skill.execute(
+        f"choose folder {folder}"
+    )
+
+    assert response.startswith(
+        "Selected folder "
+    )
+    assert button.invoked is True
+
+def test_folder_flow_revalidates_original_dialog_after_selection(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+
+    folder = (
+        tmp_path
+        / "target"
+    )
+
+    folder.mkdir()
+
+    button = FakeControl(
+        name="OK",
+        control_type="Button",
+        automation_id="1",
+    )
+
+    initial_dialog = FakeDialog(
+        title="Browse For Folder",
+        controls=[
+            button,
+        ],
+    )
+
+    revalidated_dialog = FakeDialog(
+        title="Browse For Folder",
+        controls=[
+            button,
+        ],
+    )
+
+    dialogs = iter(
+        [
+            initial_dialog,
+            revalidated_dialog,
+        ]
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_foreground_hwnd",
+        lambda: 123,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_get_dialog",
+        lambda hwnd: next(dialogs),
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_select_folder_in_dialog",
+        lambda hwnd, path: True,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_wait_for_dialog_completion",
+        lambda hwnd: True,
+    )
+
+    response = skill.execute(
+        f"choose folder {folder}"
+    )
+
+    assert response.startswith(
+        "Selected folder "
+    )
+    assert button.invoked is True

@@ -49,6 +49,15 @@ class FileDialogSkill(
         flags=re.IGNORECASE,
     )
 
+    FOLDER_PATTERN = re.compile(
+        (
+            r"^(?:choose|select)\s+folder\s+"
+            r"(.+?)"
+            r"\s*[.!?]*$"
+        ),
+        flags=re.IGNORECASE,
+    )
+
     def can_handle(
         self,
         command: str,
@@ -60,6 +69,8 @@ class FileDialogSkill(
             is not None
             or self.SAVE_PATTERN.match(clean)
             is not None
+            or self.FOLDER_PATTERN.match(clean)
+            is not None
         )
 
     def execute(
@@ -70,6 +81,7 @@ class FileDialogSkill(
 
         open_match = self.OPEN_PATTERN.match(clean)
         save_match = self.SAVE_PATTERN.match(clean)
+        folder_match = self.FOLDER_PATTERN.match(clean)
 
         if open_match is not None:
             mode = "open"
@@ -78,6 +90,10 @@ class FileDialogSkill(
         elif save_match is not None:
             mode = "save"
             raw_path = save_match.group(1)
+
+        elif folder_match is not None:
+            mode = "folder"
+            raw_path = folder_match.group(1)
 
         else:
             return (
@@ -108,7 +124,7 @@ class FileDialogSkill(
         if dialog is None:
             return (
                 "I couldn't verify a Windows "
-                "Open/Save file dialog."
+                "file dialog."
             )
 
         title = self._safe_text(dialog)
@@ -119,8 +135,14 @@ class FileDialogSkill(
         ):
             return (
                 "I couldn't verify that the active "
-                f"window is the expected {mode} "
-                "file dialog."
+                "window is the expected file dialog."
+            )
+
+        if mode == "folder":
+            return self._execute_folder_selection(
+                hwnd=hwnd,
+                dialog=dialog,
+                path=path,
             )
 
         file_name_edit = self._resolve_file_name_edit(
@@ -187,6 +209,87 @@ class FileDialogSkill(
 
         return f"Saved file as {path}."
 
+    def _execute_folder_selection(
+        self,
+        *,
+        hwnd: int,
+        dialog,
+        path: Path,
+    ) -> str:
+        if self._foreground_hwnd() != hwnd:
+            return (
+                "The active window changed before "
+                "the folder dialog could be used."
+            )
+
+        if not self._select_folder_in_dialog(
+            hwnd=hwnd,
+            path=path,
+        ):
+            return (
+                "I couldn't safely select that "
+                "folder in the folder dialog."
+            )
+
+        # Win32 TreeView selection can temporarily move
+        # keyboard focus even though the same folder
+        # dialog remains active and valid. Do not depend
+        # on foreground equality after programmatic tree
+        # selection. Revalidate the exact original dialog
+        # HWND and resolve the OK button again instead.
+        revalidated_dialog = self._get_dialog(
+            hwnd
+        )
+
+        if revalidated_dialog is None:
+            return (
+                "I couldn't revalidate the folder "
+                "dialog after selecting the folder."
+            )
+
+        title = self._safe_text(
+            revalidated_dialog
+        )
+
+        if not self._dialog_title_matches(
+            title=title,
+            mode="folder",
+        ):
+            return (
+                "The folder dialog changed before "
+                "the selection could be confirmed."
+            )
+
+        action_button = self._resolve_action_button(
+            dialog=revalidated_dialog,
+            mode="folder",
+        )
+
+        if action_button is None:
+            return (
+                "I couldn't uniquely resolve the "
+                "folder dialog OK button."
+            )
+
+        if not self._invoke_button(
+            action_button
+        ):
+            return (
+                "I couldn't safely invoke the "
+                "folder dialog OK button."
+            )
+
+        if not self._wait_for_dialog_completion(
+            hwnd
+        ):
+            return (
+                "I couldn't verify that the folder "
+                "dialog completed. The action was "
+                "not retried."
+            )
+
+        return f"Selected folder {path}."
+
     def _normalize_path(
         self,
         raw_path: str,
@@ -223,6 +326,21 @@ class FileDialogSkill(
                 return (
                     "I couldn't open that path "
                     "because it is not a file."
+                )
+
+            return None
+
+        if mode == "folder":
+            if not path.exists():
+                return (
+                    "I couldn't select that folder "
+                    "because it does not exist."
+                )
+
+            if not path.is_dir():
+                return (
+                    "I couldn't select that path "
+                    "because it is not a folder."
                 )
 
             return None
@@ -299,11 +417,149 @@ class FileDialogSkill(
                 or normalized.startswith("open ")
             )
 
+        if mode == "folder":
+            return (
+                normalized == "browse for folder"
+                or normalized.startswith(
+                    "browse for folder "
+                )
+            )
+
         return (
             normalized == "save as"
             or normalized.startswith("save as ")
             or normalized == "save"
         )
+
+    def _select_folder_in_dialog(
+        self,
+        *,
+        hwnd: int,
+        path: Path,
+    ) -> bool:
+        try:
+            drive = path.drive
+
+            if not drive:
+                return False
+
+            drive_letter = (
+                drive.rstrip("\\/")
+                .upper()
+            )
+
+            relative_parts = list(
+                path.parts[1:]
+            )
+
+            dialog = (
+                Desktop(
+                    backend="win32"
+                )
+                .window(
+                    handle=hwnd
+                )
+            )
+
+            tree = (
+                dialog
+                .child_window(
+                    control_id=100
+                )
+                .wrapper_object()
+            )
+
+            this_pc = tree.get_item(
+                r"\Desktop\This PC"
+            )
+
+            try:
+                this_pc.expand()
+            except Exception:
+                pass
+
+            time.sleep(
+                self.COMPLETION_POLL_INTERVAL_SECONDS
+            )
+
+            drive_item = None
+
+            for child in this_pc.children():
+                text = (
+                    str(
+                        child.text()
+                    )
+                    .strip()
+                )
+
+                if (
+                    f"({drive_letter})"
+                    in text.upper()
+                ):
+                    if drive_item is not None:
+                        return False
+
+                    drive_item = child
+
+            if drive_item is None:
+                return False
+
+            current = drive_item
+
+            if relative_parts:
+                try:
+                    current.expand()
+                except Exception:
+                    pass
+
+                time.sleep(
+                    self.COMPLETION_POLL_INTERVAL_SECONDS
+                )
+
+            for index, part in enumerate(
+                relative_parts
+            ):
+                matches = []
+
+                for child in current.children():
+                    text = (
+                        str(
+                            child.text()
+                        )
+                        .strip()
+                    )
+
+                    if (
+                        text.casefold()
+                        == str(part).casefold()
+                    ):
+                        matches.append(
+                            child
+                        )
+
+                if len(matches) != 1:
+                    return False
+
+                current = matches[0]
+
+                if index < len(
+                    relative_parts
+                ) - 1:
+                    try:
+                        current.expand()
+                    except Exception:
+                        pass
+
+                    time.sleep(
+                        self.COMPLETION_POLL_INTERVAL_SECONDS
+                    )
+
+            current.select()
+
+            return True
+
+        except Exception:
+            return False
 
     def _resolve_file_name_edit(
         self,
@@ -355,11 +611,12 @@ class FileDialogSkill(
         dialog,
         mode: str,
     ):
-        expected = (
-            "open"
-            if mode == "open"
-            else "save"
-        )
+        if mode == "open":
+            expected = "open"
+        elif mode == "folder":
+            expected = "ok"
+        else:
+            expected = "save"
 
         candidates = []
 
@@ -388,10 +645,6 @@ class FileDialogSkill(
 
             candidates.append(control)
 
-        # Windows common Open/Save dialogs can expose
-        # multiple controls named "Open" or "Save".
-        # The real native dialog action button is IDOK,
-        # exposed by UI Automation with automation ID "1".
         primary_candidates = [
             control
             for control in candidates
@@ -403,13 +656,9 @@ class FileDialogSkill(
         if len(primary_candidates) == 1:
             return primary_candidates[0]
 
-        # Fail closed if more than one native action
-        # button somehow matches.
         if len(primary_candidates) > 1:
             return None
 
-        # Safe fallback for dialogs that expose only
-        # one matching visible/enabled action button.
         if len(candidates) == 1:
             return candidates[0]
 
