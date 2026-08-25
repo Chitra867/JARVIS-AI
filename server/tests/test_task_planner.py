@@ -766,6 +766,122 @@ class TaskPlannerTests(
         )
 
     # ==================================================
+    # FILE DIALOG WORKFLOWS
+    # ==================================================
+
+    def test_choose_file_after_app_launch_is_split(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self._commands(
+                (
+                    r"open notepad then choose file "
+                    r"D:\AI\JARVIS\server\dialog_test.txt"
+                )
+            ),
+            [
+                "open notepad",
+                (
+                    r"choose file "
+                    r"D:\AI\JARVIS\server\dialog_test.txt"
+                ),
+            ],
+        )
+
+    def test_save_file_as_after_app_launch_is_split(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self._commands(
+                (
+                    r"open notepad then save file as "
+                    r"D:\AI\JARVIS\server\output.txt"
+                )
+            ),
+            [
+                "open notepad",
+                (
+                    r"save file as "
+                    r"D:\AI\JARVIS\server\output.txt"
+                ),
+            ],
+        )
+
+    def test_choose_folder_after_app_launch_is_split(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self._commands(
+                (
+                    r"open notepad then choose folder "
+                    r"D:\AI\JARVIS\server"
+                )
+            ),
+            [
+                "open notepad",
+                (
+                    r"choose folder "
+                    r"D:\AI\JARVIS\server"
+                ),
+            ],
+        )
+
+    def test_select_folder_after_app_launch_is_split(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self._commands(
+                (
+                    r"open notepad then select folder "
+                    r"D:\AI\JARVIS"
+                )
+            ),
+            [
+                "open notepad",
+                (
+                    r"select folder "
+                    r"D:\AI\JARVIS"
+                ),
+            ],
+        )
+
+    def test_file_path_with_and_is_not_split(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self._commands(
+                (
+                    r"choose file "
+                    r"D:\Research and Development\notes.txt"
+                )
+            ),
+            [
+                (
+                    r"choose file "
+                    r"D:\Research and Development\notes.txt"
+                ),
+            ],
+        )
+
+    def test_save_path_with_next_is_not_split(
+        self,
+    ) -> None:
+        self.assertEqual(
+            self._commands(
+                (
+                    r"save file as "
+                    r"D:\next\report.txt"
+                )
+            ),
+            [
+                (
+                    r"save file as "
+                    r"D:\next\report.txt"
+                ),
+            ],
+        )
+
+    # ==================================================
     # STEP INDEXES
     # ==================================================
 

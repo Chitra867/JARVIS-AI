@@ -86,6 +86,9 @@ class TaskPlanner:
     STEP_START_PATTERN = (
         r"(?:"
         r"open"
+        r"|save"
+        r"|choose"
+        r"|browse"
         r"|launch"
         r"|start"
         r"|close"
