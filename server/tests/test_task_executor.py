@@ -878,5 +878,87 @@ class TaskExecutorTests(
 
 
 
+    # ==================================================
+    # UI RETRY SAFETY - AMBIGUITY
+    # ==================================================
+
+    def test_wrapped_ambiguity_is_not_retryable(
+        self,
+    ) -> None:
+        response = (
+            "The screen changed before I could safely "
+            "click the target. I found multiple possible "
+            "matches for 'search'. Please specify the "
+            "exact control. No click was performed."
+        )
+
+        self.assertFalse(
+            self.executor
+            ._ui_click_response_retryable(
+                response
+            )
+        )
+
+    # ==================================================
+    # UI RETRY SAFETY - CONFIRMATION
+    # ==================================================
+
+    def test_confirmation_required_action_is_not_retryable(
+        self,
+    ) -> None:
+        response = (
+            "This is a sensitive or destructive action. "
+            "Confirm click abc123 before continuing."
+        )
+
+        self.assertFalse(
+            self.executor
+            ._ui_click_response_retryable(
+                response
+            )
+        )
+
+    # ==================================================
+    # UI RETRY SAFETY - IDENTITY CHANGE
+    # ==================================================
+
+    def test_target_identity_change_is_not_retryable(
+        self,
+    ) -> None:
+        response = (
+            "The target changed position or identity "
+            "before the action could be verified. "
+            "No click was performed."
+        )
+
+        self.assertFalse(
+            self.executor
+            ._ui_click_response_retryable(
+                response
+            )
+        )
+
+    # ==================================================
+    # UI RETRY SAFETY - TRANSIENT WINDOW CHANGE
+    # ==================================================
+
+    def test_transient_window_change_remains_retryable(
+        self,
+    ) -> None:
+        response = (
+            "The active window changed before the "
+            "target could be clicked. "
+            "No click was performed."
+        )
+
+        self.assertTrue(
+            self.executor
+            ._ui_click_response_retryable(
+                response
+            )
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

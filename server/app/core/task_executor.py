@@ -130,6 +130,28 @@ class TaskExecutor:
         "the screen changed before i could safely click the target",
     )
 
+    NON_RETRYABLE_UI_CLICK_MESSAGES = (
+        "multiple possible matches",
+        "is ambiguous",
+        "please specify the exact control",
+        "sensitive or destructive action",
+        "confirm click ",
+        "confirmation token",
+        "confirmation expired",
+        "pending ui click",
+        "there is no pending sensitive ui click",
+        "does not match the pending ui action",
+        "confirmed target",
+        "confirmed control changed identity or position",
+        "no longer visible or enabled",
+        "not currently safe to click",
+        "target changed position or identity",
+        "invalid screen rectangle",
+        "mouse fail-safe was triggered",
+        "windows ui automation could not safely resolve",
+        "couldn't safely complete the click",
+    )
+
     # =====================================================
     # EXECUTE RAW COMMAND
     # =====================================================
@@ -1824,9 +1846,27 @@ class TaskExecutor:
         ):
             return False
 
-        return any(
+        # Safety veto always wins. This prevents a transient
+        # wrapper such as "The screen changed..." from making
+        # an ambiguous, confirmation-required, identity-changed,
+        # or otherwise unsafe response eligible for retry.
+        if any(
             marker
             in normalized
+
+            for marker
+            in self.NON_RETRYABLE_UI_CLICK_MESSAGES
+        ):
+            return False
+
+        # Retry only explicitly known transient failures.
+        # startswith() is deliberate so an embedded retryable
+        # phrase inside another safety response cannot enable
+        # an automatic retry.
+        return any(
+            normalized.startswith(
+                marker
+            )
 
             for marker
             in self.RETRYABLE_UI_CLICK_MESSAGES
