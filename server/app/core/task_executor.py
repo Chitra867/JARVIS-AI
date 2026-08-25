@@ -968,6 +968,65 @@ class TaskExecutor:
                     )
                 )
 
+                next_step_requires_focus = (
+                    self._next_step_requires_focus_context(
+                        plan=plan,
+                        step_position=(
+                            step_position
+                        ),
+                    )
+                )
+
+                # Never hand a launched application off to a
+                # focus-sensitive desktop action unless the
+                # launch produced a verified focus context.
+                if (
+                    actual_handler
+                    == "AppLauncherSkill"
+                    and next_step_requires_focus
+                    and captured_focus_context
+                    is None
+                ):
+                    executed_steps.append(
+                        StepExecutionResult(
+                            index=(
+                                step.index
+                            ),
+                            command=(
+                                step.command
+                            ),
+                            handler=(
+                                actual_handler
+                            ),
+                            status=(
+                                ExecutionStatus
+                                .BLOCKED
+                            ),
+                            response=(
+                                "The launched application's "
+                                "verified focus context could "
+                                "not be captured for the next "
+                                "desktop action."
+                            ),
+                        )
+                    )
+
+                    return (
+                        self._failure_result(
+                            plan=plan,
+                            executed_steps=(
+                                executed_steps
+                            ),
+                            runtime_context=(
+                                runtime_context
+                            ),
+                            stopped_at=(
+                                step.index
+                            ),
+                            blocked=True,
+                        )
+                    )
+
                 if (
                     captured_focus_context
                     is not None
@@ -1619,6 +1678,40 @@ class TaskExecutor:
         return (
             ready,
             reason,
+        )
+
+    # =====================================================
+    # NEXT STEP REQUIRES VERIFIED FOCUS CONTEXT
+    # =====================================================
+
+    def _next_step_requires_focus_context(
+        self,
+        *,
+        plan: ValidatedPlan,
+        step_position: int,
+    ) -> bool:
+        next_position = (
+            step_position
+            + 1
+        )
+
+        if (
+            next_position
+            >= len(
+                plan.steps
+            )
+        ):
+            return False
+
+        next_step = (
+            plan.steps[
+                next_position
+            ]
+        )
+
+        return (
+            next_step.handler
+            in self.FOCUS_SENSITIVE_HANDLERS
         )
 
     # =====================================================

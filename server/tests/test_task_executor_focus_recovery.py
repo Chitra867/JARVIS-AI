@@ -495,7 +495,7 @@ def test_executor_does_not_recover_focus_for_unrelated_skill(
 # ======================================================
 
 
-def test_executor_continues_without_focus_recovery_when_launcher_has_no_context(
+def test_executor_blocks_focus_sensitive_step_when_launcher_has_no_context(
     monkeypatch,
 ):
     launcher = (
@@ -539,7 +539,17 @@ def test_executor_continues_without_focus_recovery_when_launcher_has_no_context(
 
     assert (
         result.success
+        is False
+    )
+
+    assert (
+        result.blocked
         is True
+    )
+
+    assert (
+        result.stopped_at
+        == 1
     )
 
     assert (
@@ -549,9 +559,28 @@ def test_executor_continues_without_focus_recovery_when_launcher_has_no_context(
 
     assert (
         input_skill.executed
-        == [
-            "type hello",
-        ]
+        == []
+    )
+
+    assert (
+        len(
+            result.steps
+        )
+        == 1
+    )
+
+    assert (
+        result.steps[
+            0
+        ].status
+        == ExecutionStatus.BLOCKED
+    )
+
+    assert (
+        "focus context"
+        in result.steps[
+            0
+        ].response.lower()
     )
 
 
