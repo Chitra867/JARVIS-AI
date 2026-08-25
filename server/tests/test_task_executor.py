@@ -16,6 +16,81 @@ from app.core.task_validator import (
 )
 
 
+# =========================================================
+# FILE DIALOG PREPARATION TEST DOUBLES
+# =========================================================
+
+
+class NoPreparationSkill:
+    pass
+
+
+class GoodPreparationSkill:
+    def __init__(
+        self,
+    ) -> None:
+        self.received = None
+
+    def prepare_for_execution(
+        self,
+        command,
+        focus_context,
+    ):
+        self.received = (
+            command,
+            focus_context,
+        )
+
+        return (
+            True,
+            "",
+        )
+
+
+class BlockedPreparationSkill:
+    def prepare_for_execution(
+        self,
+        command,
+        focus_context,
+    ):
+        return (
+            False,
+            "Preparation blocked.",
+        )
+
+
+class InvalidPreparationSkill:
+    def prepare_for_execution(
+        self,
+        command,
+        focus_context,
+    ):
+        return True
+
+
+class InvalidStatusPreparationSkill:
+    def prepare_for_execution(
+        self,
+        command,
+        focus_context,
+    ):
+        return (
+            "yes",
+            "",
+        )
+
+
+class FailingPreparationSkill:
+    def prepare_for_execution(
+        self,
+        command,
+        focus_context,
+    ):
+        raise RuntimeError(
+            "boom"
+        )
+
+
 class TaskExecutorTests(
     unittest.TestCase
 ):
@@ -596,6 +671,211 @@ class TaskExecutorTests(
                 "Searching Google for Python."
             )
         )
+
+
+    # ==================================================
+    # FILE DIALOG FOCUS SENSITIVITY
+    # ==================================================
+
+    def test_file_dialog_skill_is_focus_sensitive(
+        self,
+    ) -> None:
+        self.assertIn(
+            "FileDialogSkill",
+            self.executor
+            .FOCUS_SENSITIVE_HANDLERS,
+        )
+
+    # ==================================================
+    # DESKTOP PREPARATION - NO HOOK
+    # ==================================================
+
+    def test_skill_without_preparation_hook_is_ready(
+        self,
+    ) -> None:
+        result = (
+            self.executor
+            ._prepare_step_execution(
+                skill=NoPreparationSkill(),
+                command="anything",
+                focus_context=object(),
+            )
+        )
+
+        self.assertEqual(
+            result,
+            (
+                True,
+                "",
+            ),
+        )
+
+    # ==================================================
+    # DESKTOP PREPARATION - SUCCESS
+    # ==================================================
+
+    def test_preparation_hook_receives_command_and_focus_context(
+        self,
+    ) -> None:
+        skill = (
+            GoodPreparationSkill()
+        )
+
+        context = (
+            object()
+        )
+
+        result = (
+            self.executor
+            ._prepare_step_execution(
+                skill=skill,
+                command=(
+                    r"choose file D:\test.txt"
+                ),
+                focus_context=context,
+            )
+        )
+
+        self.assertEqual(
+            result,
+            (
+                True,
+                "",
+            ),
+        )
+
+        self.assertEqual(
+            skill.received,
+            (
+                r"choose file D:\test.txt",
+                context,
+            ),
+        )
+
+    # ==================================================
+    # DESKTOP PREPARATION - EXPLICIT BLOCK
+    # ==================================================
+
+    def test_preparation_hook_can_fail_closed_with_reason(
+        self,
+    ) -> None:
+        result = (
+            self.executor
+            ._prepare_step_execution(
+                skill=(
+                    BlockedPreparationSkill()
+                ),
+                command=(
+                    "choose file test.txt"
+                ),
+                focus_context=object(),
+            )
+        )
+
+        self.assertEqual(
+            result,
+            (
+                False,
+                "Preparation blocked.",
+            ),
+        )
+
+    # ==================================================
+    # DESKTOP PREPARATION - INVALID RESULT
+    # ==================================================
+
+    def test_invalid_preparation_result_fails_closed(
+        self,
+    ) -> None:
+        (
+            prepared,
+            reason,
+        ) = (
+            self.executor
+            ._prepare_step_execution(
+                skill=(
+                    InvalidPreparationSkill()
+                ),
+                command=(
+                    "choose file test.txt"
+                ),
+                focus_context=object(),
+            )
+        )
+
+        self.assertFalse(
+            prepared
+        )
+
+        self.assertIn(
+            "invalid result",
+            reason.lower(),
+        )
+
+    # ==================================================
+    # DESKTOP PREPARATION - INVALID STATUS
+    # ==================================================
+
+    def test_invalid_preparation_status_fails_closed(
+        self,
+    ) -> None:
+        (
+            prepared,
+            reason,
+        ) = (
+            self.executor
+            ._prepare_step_execution(
+                skill=(
+                    InvalidStatusPreparationSkill()
+                ),
+                command=(
+                    "choose file test.txt"
+                ),
+                focus_context=object(),
+            )
+        )
+
+        self.assertFalse(
+            prepared
+        )
+
+        self.assertIn(
+            "invalid status",
+            reason.lower(),
+        )
+
+    # ==================================================
+    # DESKTOP PREPARATION - EXCEPTION
+    # ==================================================
+
+    def test_preparation_exception_fails_closed(
+        self,
+    ) -> None:
+        (
+            prepared,
+            reason,
+        ) = (
+            self.executor
+            ._prepare_step_execution(
+                skill=(
+                    FailingPreparationSkill()
+                ),
+                command=(
+                    "choose file test.txt"
+                ),
+                focus_context=object(),
+            )
+        )
+
+        self.assertFalse(
+            prepared
+        )
+
+        self.assertIn(
+            "failed",
+            reason.lower(),
+        )
+
 
 
 if __name__ == "__main__":

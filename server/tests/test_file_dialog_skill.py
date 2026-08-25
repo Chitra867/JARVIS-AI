@@ -1,3 +1,11 @@
+from dataclasses import (
+    dataclass,
+)
+
+from app.skills import (
+    file_dialog_skill as file_dialog_module,
+)
+
 from app.skills.file_dialog_skill import (
     FileDialogSkill,
 )
@@ -80,6 +88,21 @@ class FakeDialog:
         self,
     ):
         return self.controls
+
+
+
+@dataclass(
+    frozen=True,
+)
+class FakeFocusContext:
+    hwnd: int = 100
+    process_id: int = 200
+    process_name: str = "notepad.exe"
+    process_names: frozenset[str] = frozenset(
+        {
+            "notepad.exe",
+        }
+    )
 
 
 def test_can_handle_open_save_and_folder_commands():
@@ -570,3 +593,360 @@ def test_folder_flow_revalidates_original_dialog_after_selection(
         "Selected folder "
     )
     assert button.invoked is True
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - OPEN
+# ======================================================
+
+
+def test_prepare_open_sends_notepad_open_shortcut(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+    context = FakeFocusContext()
+
+    source = (
+        tmp_path
+        / "sample.txt"
+    )
+
+    source.write_text(
+        "hello"
+    )
+
+    calls = []
+
+    monkeypatch.setattr(
+        skill,
+        "_current_prepared_dialog_matches",
+        lambda mode, focus_context: False,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_focus_context_window_matches",
+        lambda focus_context: True,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_foreground_hwnd",
+        lambda: context.hwnd,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_wait_for_prepared_dialog",
+        lambda mode, focus_context: True,
+    )
+
+    monkeypatch.setattr(
+        file_dialog_module.pyautogui,
+        "hotkey",
+        lambda *keys: calls.append(
+            keys
+        ),
+    )
+
+    result = skill.prepare_for_execution(
+        f"choose file {source}",
+        context,
+    )
+
+    assert result == (
+        True,
+        "",
+    )
+
+    assert calls == [
+        (
+            "ctrl",
+            "o",
+        ),
+    ]
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - SAVE AS
+# ======================================================
+
+
+def test_prepare_save_sends_notepad_save_as_shortcut(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+    context = FakeFocusContext()
+
+    destination = (
+        tmp_path
+        / "new-file.txt"
+    )
+
+    calls = []
+
+    monkeypatch.setattr(
+        skill,
+        "_current_prepared_dialog_matches",
+        lambda mode, focus_context: False,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_focus_context_window_matches",
+        lambda focus_context: True,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_foreground_hwnd",
+        lambda: context.hwnd,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_wait_for_prepared_dialog",
+        lambda mode, focus_context: True,
+    )
+
+    monkeypatch.setattr(
+        file_dialog_module.pyautogui,
+        "hotkey",
+        lambda *keys: calls.append(
+            keys
+        ),
+    )
+
+    result = skill.prepare_for_execution(
+        f"save file as {destination}",
+        context,
+    )
+
+    assert result == (
+        True,
+        "",
+    )
+
+    assert calls == [
+        (
+            "ctrl",
+            "shift",
+            "s",
+        ),
+    ]
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - UNSUPPORTED APP
+# ======================================================
+
+
+def test_prepare_rejects_unsupported_application(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+
+    source = (
+        tmp_path
+        / "sample.txt"
+    )
+
+    source.write_text(
+        "hello"
+    )
+
+    context = FakeFocusContext(
+        process_name="chrome.exe",
+        process_names=frozenset(
+            {
+                "chrome.exe",
+            }
+        ),
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_current_prepared_dialog_matches",
+        lambda mode, focus_context: False,
+    )
+
+    prepared, reason = (
+        skill.prepare_for_execution(
+            f"choose file {source}",
+            context,
+        )
+    )
+
+    assert prepared is False
+    assert "notepad" in reason.lower()
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - WRONG FOREGROUND
+# ======================================================
+
+
+def test_prepare_rejects_wrong_foreground_window(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+    context = FakeFocusContext()
+
+    source = (
+        tmp_path
+        / "sample.txt"
+    )
+
+    source.write_text(
+        "hello"
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_current_prepared_dialog_matches",
+        lambda mode, focus_context: False,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_focus_context_window_matches",
+        lambda focus_context: True,
+    )
+
+    monkeypatch.setattr(
+        skill,
+        "_foreground_hwnd",
+        lambda: 999,
+    )
+
+    prepared, reason = (
+        skill.prepare_for_execution(
+            f"choose file {source}",
+            context,
+        )
+    )
+
+    assert prepared is False
+    assert "foreground" in reason.lower()
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - INVALID PATH
+# ======================================================
+
+
+def test_prepare_rejects_invalid_path_before_shortcut(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+    context = FakeFocusContext()
+
+    missing = (
+        tmp_path
+        / "missing.txt"
+    )
+
+    calls = []
+
+    monkeypatch.setattr(
+        file_dialog_module.pyautogui,
+        "hotkey",
+        lambda *keys: calls.append(
+            keys
+        ),
+    )
+
+    prepared, reason = (
+        skill.prepare_for_execution(
+            f"choose file {missing}",
+            context,
+        )
+    )
+
+    assert prepared is False
+    assert "does not exist" in reason.lower()
+    assert calls == []
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - FOLDER DIALOG
+# ======================================================
+
+
+def test_prepare_folder_does_not_guess_application_shortcut(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+    context = FakeFocusContext()
+
+    monkeypatch.setattr(
+        skill,
+        "_current_prepared_dialog_matches",
+        lambda mode, focus_context: False,
+    )
+
+    prepared, reason = (
+        skill.prepare_for_execution(
+            f"choose folder {tmp_path}",
+            context,
+        )
+    )
+
+    assert prepared is False
+    assert "folder-dialog" in reason.lower()
+
+
+# ======================================================
+# MULTI-STEP PREPARATION - ALREADY OPEN DIALOG
+# ======================================================
+
+
+def test_prepare_accepts_already_open_verified_dialog(
+    monkeypatch,
+    tmp_path,
+):
+    skill = FileDialogSkill()
+    context = FakeFocusContext()
+
+    source = (
+        tmp_path
+        / "sample.txt"
+    )
+
+    source.write_text(
+        "hello"
+    )
+
+    calls = []
+
+    monkeypatch.setattr(
+        skill,
+        "_current_prepared_dialog_matches",
+        lambda mode, focus_context: True,
+    )
+
+    monkeypatch.setattr(
+        file_dialog_module.pyautogui,
+        "hotkey",
+        lambda *keys: calls.append(
+            keys
+        ),
+    )
+
+    result = skill.prepare_for_execution(
+        f"choose file {source}",
+        context,
+    )
+
+    assert result == (
+        True,
+        "",
+    )
+
+    assert calls == []

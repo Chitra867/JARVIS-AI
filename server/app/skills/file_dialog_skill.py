@@ -5,7 +5,9 @@ from pathlib import (
     Path,
 )
 
+import pyautogui
 import win32gui
+import win32process
 
 from pywinauto import (
     Desktop,
@@ -21,6 +23,16 @@ class FileDialogSkill(
 ):
     COMPLETION_TIMEOUT_SECONDS = 2.0
     COMPLETION_POLL_INTERVAL_SECONDS = 0.05
+
+    PREPARATION_TIMEOUT_SECONDS = 3.0
+    PREPARATION_POLL_INTERVAL_SECONDS = 0.05
+
+    SUPPORTED_PREPARATION_PROCESS_NAMES = frozenset(
+        {
+            "notepad",
+            "notepad.exe",
+        }
+    )
 
     FILE_NAME_AUTOMATION_IDS = frozenset(
         {
@@ -72,6 +84,518 @@ class FileDialogSkill(
             or self.FOLDER_PATTERN.match(clean)
             is not None
         )
+
+    # ==================================================
+    # MULTI-STEP PREPARATION
+    # ==================================================
+
+    def prepare_for_execution(
+        self,
+        command: str,
+        focus_context: object,
+    ) -> tuple[
+        bool,
+        str,
+    ]:
+        parsed = self._parse_command(
+            command
+        )
+
+        if parsed is None:
+            return (
+                False,
+                (
+                    "I couldn't understand the "
+                    "file dialog command."
+                ),
+            )
+
+        (
+            mode,
+            raw_path,
+        ) = parsed
+
+        path = self._normalize_path(
+            raw_path
+        )
+
+        validation_error = self._validate_path(
+            mode=mode,
+            path=path,
+        )
+
+        # Validate before opening any dialog so an invalid
+        # path cannot cause an unnecessary desktop action.
+        if validation_error is not None:
+            return (
+                False,
+                validation_error,
+            )
+
+        # If the expected dialog is already open and is
+        # owned by the exact verified application window,
+        # preparation is already complete.
+        if self._current_prepared_dialog_matches(
+            mode=mode,
+            focus_context=focus_context,
+        ):
+            return (
+                True,
+                "",
+            )
+
+        # Folder-picker invocation is application-specific.
+        # We can safely operate an already-open Browse For
+        # Folder dialog, but we do not guess a shortcut for
+        # opening one from an arbitrary application.
+        if mode == "folder":
+            return (
+                False,
+                (
+                    "Automatic folder-dialog opening "
+                    "is unavailable for this "
+                    "application. Open the Browse "
+                    "For Folder dialog first."
+                ),
+            )
+
+        if not self._focus_context_is_supported_notepad(
+            focus_context
+        ):
+            return (
+                False,
+                (
+                    "Automatic Open/Save dialog "
+                    "preparation is currently "
+                    "supported only for a verified "
+                    "Notepad window."
+                ),
+            )
+
+        owner_hwnd = self._focus_context_hwnd(
+            focus_context
+        )
+
+        if not owner_hwnd:
+            return (
+                False,
+                (
+                    "The verified application "
+                    "window is unavailable."
+                ),
+            )
+
+        if not self._focus_context_window_matches(
+            focus_context
+        ):
+            return (
+                False,
+                (
+                    "The verified application "
+                    "window changed before the "
+                    "file dialog could be opened."
+                ),
+            )
+
+        # The executor has already recovered application
+        # focus. Require the exact verified main window
+        # before sending an application shortcut.
+        if self._foreground_hwnd() != owner_hwnd:
+            return (
+                False,
+                (
+                    "The verified Notepad window "
+                    "is not currently in the "
+                    "foreground."
+                ),
+            )
+
+        try:
+            if mode == "open":
+                pyautogui.hotkey(
+                    "ctrl",
+                    "o",
+                )
+
+            else:
+                pyautogui.hotkey(
+                    "ctrl",
+                    "shift",
+                    "s",
+                )
+
+        except Exception:
+            return (
+                False,
+                (
+                    "I couldn't safely send the "
+                    "file-dialog shortcut."
+                ),
+            )
+
+        if not self._wait_for_prepared_dialog(
+            mode=mode,
+            focus_context=focus_context,
+        ):
+            return (
+                False,
+                (
+                    "The expected file dialog did "
+                    "not appear from the verified "
+                    "Notepad window."
+                ),
+            )
+
+        return (
+            True,
+            "",
+        )
+
+    def _parse_command(
+        self,
+        command: str,
+    ) -> tuple[
+        str,
+        str,
+    ] | None:
+        clean = command.strip()
+
+        open_match = self.OPEN_PATTERN.match(
+            clean
+        )
+
+        if open_match is not None:
+            return (
+                "open",
+                open_match.group(1),
+            )
+
+        save_match = self.SAVE_PATTERN.match(
+            clean
+        )
+
+        if save_match is not None:
+            return (
+                "save",
+                save_match.group(1),
+            )
+
+        folder_match = self.FOLDER_PATTERN.match(
+            clean
+        )
+
+        if folder_match is not None:
+            return (
+                "folder",
+                folder_match.group(1),
+            )
+
+        return None
+
+    def _focus_context_hwnd(
+        self,
+        focus_context: object,
+    ) -> int:
+        try:
+            hwnd = int(
+                getattr(
+                    focus_context,
+                    "hwnd",
+                    0,
+                )
+                or 0
+            )
+
+            return (
+                hwnd
+                if hwnd > 0
+                else 0
+            )
+
+        except Exception:
+            return 0
+
+    def _focus_context_process_id(
+        self,
+        focus_context: object,
+    ) -> int:
+        try:
+            process_id = int(
+                getattr(
+                    focus_context,
+                    "process_id",
+                    0,
+                )
+                or 0
+            )
+
+            return (
+                process_id
+                if process_id > 0
+                else 0
+            )
+
+        except Exception:
+            return 0
+
+    def _focus_context_process_names(
+        self,
+        focus_context: object,
+    ) -> frozenset[
+        str
+    ]:
+        names: set[
+            str
+        ] = set()
+
+        try:
+            single_name = getattr(
+                focus_context,
+                "process_name",
+                "",
+            )
+
+            if single_name:
+                names.add(
+                    Path(
+                        str(
+                            single_name
+                        )
+                    )
+                    .name
+                    .casefold()
+                )
+
+        except Exception:
+            pass
+
+        try:
+            multiple_names = getattr(
+                focus_context,
+                "process_names",
+                (),
+            )
+
+            if isinstance(
+                multiple_names,
+                (
+                    tuple,
+                    list,
+                    set,
+                    frozenset,
+                ),
+            ):
+                for value in multiple_names:
+                    if not value:
+                        continue
+
+                    names.add(
+                        Path(
+                            str(
+                                value
+                            )
+                        )
+                        .name
+                        .casefold()
+                    )
+
+        except Exception:
+            pass
+
+        return frozenset(
+            names
+        )
+
+    def _focus_context_is_supported_notepad(
+        self,
+        focus_context: object,
+    ) -> bool:
+        names = self._focus_context_process_names(
+            focus_context
+        )
+
+        return bool(
+            names
+            & self.SUPPORTED_PREPARATION_PROCESS_NAMES
+        )
+
+    def _focus_context_window_matches(
+        self,
+        focus_context: object,
+    ) -> bool:
+        hwnd = self._focus_context_hwnd(
+            focus_context
+        )
+
+        if not hwnd:
+            return False
+
+        try:
+            if not win32gui.IsWindow(
+                hwnd
+            ):
+                return False
+
+            if not win32gui.IsWindowVisible(
+                hwnd
+            ):
+                return False
+
+            if not win32gui.IsWindowEnabled(
+                hwnd
+            ):
+                return False
+
+            (
+                _,
+                actual_process_id,
+            ) = (
+                win32process
+                .GetWindowThreadProcessId(
+                    hwnd
+                )
+            )
+
+        except Exception:
+            return False
+
+        expected_process_id = (
+            self._focus_context_process_id(
+                focus_context
+            )
+        )
+
+        if (
+            expected_process_id
+            and actual_process_id
+            != expected_process_id
+        ):
+            return False
+
+        return True
+
+    def _current_prepared_dialog_matches(
+        self,
+        *,
+        mode: str,
+        focus_context: object,
+    ) -> bool:
+        dialog_hwnd = self._foreground_hwnd()
+
+        if not dialog_hwnd:
+            return False
+
+        owner_hwnd = self._focus_context_hwnd(
+            focus_context
+        )
+
+        if not owner_hwnd:
+            return False
+
+        try:
+            if not win32gui.IsWindow(
+                dialog_hwnd
+            ):
+                return False
+
+            if not win32gui.IsWindowVisible(
+                dialog_hwnd
+            ):
+                return False
+
+            if not win32gui.IsWindowEnabled(
+                dialog_hwnd
+            ):
+                return False
+
+            if (
+                win32gui.GetClassName(
+                    dialog_hwnd
+                )
+                != "#32770"
+            ):
+                return False
+
+            if (
+                int(
+                    win32gui.GetWindow(
+                        dialog_hwnd,
+                        4,
+                    )
+                    or 0
+                )
+                != owner_hwnd
+            ):
+                return False
+
+            (
+                _,
+                dialog_process_id,
+            ) = (
+                win32process
+                .GetWindowThreadProcessId(
+                    dialog_hwnd
+                )
+            )
+
+        except Exception:
+            return False
+
+        expected_process_id = (
+            self._focus_context_process_id(
+                focus_context
+            )
+        )
+
+        if (
+            expected_process_id
+            and dialog_process_id
+            != expected_process_id
+        ):
+            return False
+
+        dialog = self._get_dialog(
+            dialog_hwnd
+        )
+
+        if dialog is None:
+            return False
+
+        title = self._safe_text(
+            dialog
+        )
+
+        return self._dialog_title_matches(
+            title=title,
+            mode=mode,
+        )
+
+    def _wait_for_prepared_dialog(
+        self,
+        *,
+        mode: str,
+        focus_context: object,
+    ) -> bool:
+        deadline = (
+            time.monotonic()
+            + self.PREPARATION_TIMEOUT_SECONDS
+        )
+
+        while (
+            time.monotonic()
+            < deadline
+        ):
+            if self._current_prepared_dialog_matches(
+                mode=mode,
+                focus_context=focus_context,
+            ):
+                return True
+
+            time.sleep(
+                self.PREPARATION_POLL_INTERVAL_SECONDS
+            )
+
+        return False
 
     def execute(
         self,

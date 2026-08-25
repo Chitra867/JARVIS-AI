@@ -112,6 +112,7 @@ class TaskExecutor:
         {
             "InputControlSkill",
             "UIAutomationClickSkill",
+            "FileDialogSkill",
         }
     )
 
@@ -421,6 +422,96 @@ class TaskExecutor:
                             "The expected application "
                             "could not be safely restored "
                             "before the next desktop action."
+                        )
+
+                    executed_steps.append(
+                        StepExecutionResult(
+                            index=(
+                                step.index
+                            ),
+                            command=(
+                                step.command
+                            ),
+                            handler=(
+                                actual_handler
+                            ),
+                            status=(
+                                ExecutionStatus
+                                .BLOCKED
+                            ),
+                            response=(
+                                failure_response
+                            ),
+                        )
+                    )
+
+                    return (
+                        self._failure_result(
+                            plan=plan,
+                            executed_steps=(
+                                executed_steps
+                            ),
+                            runtime_context=(
+                                runtime_context
+                            ),
+                            stopped_at=(
+                                step.index
+                            ),
+                            blocked=True,
+                        )
+                    )
+
+            # =================================================
+            # PREPARE DESKTOP STEP
+            # =================================================
+            #
+            # Some deterministic desktop skills need a small
+            # application-specific preparation step before
+            # their normal execute() call.
+            #
+            # FileDialogSkill uses this hook to open a verified
+            # Open/Save dialog only after the expected launched
+            # application focus has been safely recovered.
+            #
+            # Skills without a preparation hook are unaffected.
+            # =================================================
+
+            if (
+                active_focus_context
+                is not None
+                and actual_handler
+                == "FileDialogSkill"
+            ):
+                (
+                    preparation_ok,
+                    preparation_reason,
+                ) = (
+                    self._prepare_step_execution(
+                        skill=skill,
+                        command=(
+                            step.command
+                        ),
+                        focus_context=(
+                            active_focus_context
+                        ),
+                    )
+                )
+
+                if not (
+                    preparation_ok
+                ):
+                    failure_response = (
+                        preparation_reason
+                        .strip()
+                    )
+
+                    if not (
+                        failure_response
+                    ):
+                        failure_response = (
+                            "The file dialog could not "
+                            "be safely prepared for the "
+                            "requested desktop action."
                         )
 
                     executed_steps.append(
@@ -1023,6 +1114,153 @@ class TaskExecutor:
                     plan,
                 )
             ),
+        )
+
+    # =====================================================
+    # PREPARE STEP EXECUTION
+    # =====================================================
+
+    def _prepare_step_execution(
+        self,
+        *,
+        skill: object,
+        command: str,
+        focus_context: object,
+    ) -> tuple[
+        bool,
+        str,
+    ]:
+        try:
+            static_preparer = (
+                inspect.getattr_static(
+                    skill,
+                    "prepare_for_execution",
+                    None,
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Step preparation inspection "
+                    f"failed for "
+                    f"{type(skill).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                False,
+                (
+                    "The desktop preparation hook "
+                    "could not be inspected."
+                ),
+            )
+
+        if (
+            static_preparer
+            is None
+        ):
+            return (
+                True,
+                "",
+            )
+
+        preparer = (
+            getattr(
+                skill,
+                "prepare_for_execution",
+                None,
+            )
+        )
+
+        if not callable(
+            preparer
+        ):
+            return (
+                False,
+                (
+                    "The desktop preparation hook "
+                    "is not callable."
+                ),
+            )
+
+        try:
+            result = (
+                preparer(
+                    command,
+                    focus_context,
+                )
+            )
+
+        except Exception as error:
+            print(
+                (
+                    "Desktop step preparation "
+                    f"failed for "
+                    f"{type(skill).__name__}: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
+                )
+            )
+
+            return (
+                False,
+                (
+                    "The desktop preparation step "
+                    "failed."
+                ),
+            )
+
+        if (
+            not isinstance(
+                result,
+                tuple,
+            )
+            or len(
+                result
+            )
+            != 2
+        ):
+            return (
+                False,
+                (
+                    "The desktop preparation hook "
+                    "returned an invalid result."
+                ),
+            )
+
+        prepared = (
+            result[
+                0
+            ]
+        )
+
+        reason = (
+            str(
+                result[
+                    1
+                ]
+            )
+            .strip()
+        )
+
+        if not isinstance(
+            prepared,
+            bool,
+        ):
+            return (
+                False,
+                (
+                    "The desktop preparation hook "
+                    "returned an invalid status."
+                ),
+            )
+
+        return (
+            prepared,
+            reason,
         )
 
     # =====================================================
