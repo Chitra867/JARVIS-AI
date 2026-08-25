@@ -388,10 +388,32 @@ class FileDialogSkill(
 
             candidates.append(control)
 
-        if len(candidates) != 1:
+        # Windows common Open/Save dialogs can expose
+        # multiple controls named "Open" or "Save".
+        # The real native dialog action button is IDOK,
+        # exposed by UI Automation with automation ID "1".
+        primary_candidates = [
+            control
+            for control in candidates
+            if self._automation_id(
+                control
+            ) == "1"
+        ]
+
+        if len(primary_candidates) == 1:
+            return primary_candidates[0]
+
+        # Fail closed if more than one native action
+        # button somehow matches.
+        if len(primary_candidates) > 1:
             return None
 
-        return candidates[0]
+        # Safe fallback for dialogs that expose only
+        # one matching visible/enabled action button.
+        if len(candidates) == 1:
+            return candidates[0]
+
+        return None
 
     def _set_file_name(
         self,

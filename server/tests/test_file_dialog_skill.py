@@ -1,7 +1,3 @@
-from pathlib import (
-    Path,
-)
-
 from app.skills.file_dialog_skill import (
     FileDialogSkill,
 )
@@ -19,13 +15,8 @@ class ElementInfo:
         control_type: str,
         automation_id: str = "",
     ):
-        self.control_type = (
-            control_type
-        )
-
-        self.automation_id = (
-            automation_id
-        )
+        self.control_type = control_type
+        self.automation_id = automation_id
 
 
 class FakeControl:
@@ -36,35 +27,20 @@ class FakeControl:
         control_type: str,
         automation_id: str = "",
     ):
-        self._name = (
-            name
+        self._name = name
+
+        self.element_info = ElementInfo(
+            control_type=control_type,
+            automation_id=automation_id,
         )
 
-        self.element_info = (
-            ElementInfo(
-                control_type=(
-                    control_type
-                ),
-                automation_id=(
-                    automation_id
-                ),
-            )
-        )
-
-        self.value = (
-            None
-        )
-
-        self.invoked = (
-            False
-        )
+        self.value = None
+        self.invoked = False
 
     def window_text(
         self,
     ):
-        return (
-            self._name
-        )
+        return self._name
 
     def is_visible(
         self,
@@ -80,16 +56,12 @@ class FakeControl:
         self,
         value,
     ):
-        self.value = (
-            value
-        )
+        self.value = value
 
     def invoke(
         self,
     ):
-        self.invoked = (
-            True
-        )
+        self.invoked = True
 
 
 class FakeDialog:
@@ -99,10 +71,7 @@ class FakeDialog:
         title: str,
         controls,
     ):
-        self.title = (
-            title
-        )
-
+        self.title = title
         self.controls = list(
             controls
         )
@@ -110,16 +79,12 @@ class FakeDialog:
     def window_text(
         self,
     ):
-        return (
-            self.title
-        )
+        return self.title
 
     def descendants(
         self,
     ):
-        return (
-            self.controls
-        )
+        return self.controls
 
 
 # ======================================================
@@ -128,9 +93,7 @@ class FakeDialog:
 
 
 def test_can_handle_open_and_save_commands():
-    skill = (
-        FileDialogSkill()
-    )
+    skill = FileDialogSkill()
 
     assert (
         skill.can_handle(
@@ -162,27 +125,19 @@ def test_can_handle_open_and_save_commands():
 def test_open_rejects_missing_file(
     tmp_path,
 ):
-    skill = (
-        FileDialogSkill()
-    )
+    skill = FileDialogSkill()
 
     missing = (
         tmp_path
         / "missing.txt"
     )
 
-    result = (
-        skill._validate_path(
-            mode="open",
-            path=missing,
-        )
+    result = skill._validate_path(
+        mode="open",
+        path=missing,
     )
 
-    assert (
-        result
-        is not None
-    )
-
+    assert result is not None
     assert (
         "does not exist"
         in result.lower()
@@ -197,9 +152,7 @@ def test_open_rejects_missing_file(
 def test_save_rejects_existing_file(
     tmp_path,
 ):
-    skill = (
-        FileDialogSkill()
-    )
+    skill = FileDialogSkill()
 
     existing = (
         tmp_path
@@ -210,18 +163,12 @@ def test_save_rejects_existing_file(
         "data"
     )
 
-    result = (
-        skill._validate_path(
-            mode="save",
-            path=existing,
-        )
+    result = skill._validate_path(
+        mode="save",
+        path=existing,
     )
 
-    assert (
-        result
-        is not None
-    )
-
+    assert result is not None
     assert (
         "overwrite"
         in result.lower()
@@ -234,25 +181,19 @@ def test_save_rejects_existing_file(
 
 
 def test_resolve_file_name_edit_requires_unique_match():
-    skill = (
-        FileDialogSkill()
+    skill = FileDialogSkill()
+
+    edit = FakeControl(
+        name="File name:",
+        control_type="Edit",
+        automation_id="1001",
     )
 
-    edit = (
-        FakeControl(
-            name="File name:",
-            control_type="Edit",
-            automation_id="1001",
-        )
-    )
-
-    dialog = (
-        FakeDialog(
-            title="Open",
-            controls=[
-                edit,
-            ],
-        )
+    dialog = FakeDialog(
+        title="Open",
+        controls=[
+            edit,
+        ],
     )
 
     assert (
@@ -284,24 +225,18 @@ def test_resolve_file_name_edit_requires_unique_match():
 
 
 def test_resolve_action_button_requires_exact_unique_name():
-    skill = (
-        FileDialogSkill()
+    skill = FileDialogSkill()
+
+    open_button = FakeControl(
+        name="Open",
+        control_type="Button",
     )
 
-    open_button = (
-        FakeControl(
-            name="Open",
-            control_type="Button",
-        )
-    )
-
-    dialog = (
-        FakeDialog(
-            title="Open",
-            controls=[
-                open_button,
-            ],
-        )
+    dialog = FakeDialog(
+        title="Open",
+        controls=[
+            open_button,
+        ],
     )
 
     assert (
@@ -314,6 +249,52 @@ def test_resolve_action_button_requires_exact_unique_name():
 
 
 # ======================================================
+# WINDOWS NATIVE ACTION BUTTON
+# ======================================================
+
+
+def test_action_button_prefers_native_dialog_id_one():
+    skill = FileDialogSkill()
+
+    dropdown_one = FakeControl(
+        name="Open",
+        control_type="Button",
+        automation_id="DropDown",
+    )
+
+    dropdown_two = FakeControl(
+        name="Open",
+        control_type="Button",
+        automation_id="DropDown",
+    )
+
+    real_open_button = FakeControl(
+        name="Open",
+        control_type="Button",
+        automation_id="1",
+    )
+
+    dialog = FakeDialog(
+        title="Open",
+        controls=[
+            dropdown_one,
+            dropdown_two,
+            real_open_button,
+        ],
+    )
+
+    result = skill._resolve_action_button(
+        dialog=dialog,
+        mode="open",
+    )
+
+    assert (
+        result
+        is real_open_button
+    )
+
+
+# ======================================================
 # FULL OPEN FLOW
 # ======================================================
 
@@ -322,9 +303,7 @@ def test_open_flow_sets_path_and_invokes_open(
     monkeypatch,
     tmp_path,
 ):
-    skill = (
-        FileDialogSkill()
-    )
+    skill = FileDialogSkill()
 
     source = (
         tmp_path
@@ -335,29 +314,24 @@ def test_open_flow_sets_path_and_invokes_open(
         "hello"
     )
 
-    edit = (
-        FakeControl(
-            name="File name:",
-            control_type="Edit",
-            automation_id="1001",
-        )
+    edit = FakeControl(
+        name="File name:",
+        control_type="Edit",
+        automation_id="1001",
     )
 
-    button = (
-        FakeControl(
-            name="Open",
-            control_type="Button",
-        )
+    button = FakeControl(
+        name="Open",
+        control_type="Button",
+        automation_id="1",
     )
 
-    dialog = (
-        FakeDialog(
-            title="Open",
-            controls=[
-                edit,
-                button,
-            ],
-        )
+    dialog = FakeDialog(
+        title="Open",
+        controls=[
+            edit,
+            button,
+        ],
     )
 
     monkeypatch.setattr(
@@ -369,9 +343,7 @@ def test_open_flow_sets_path_and_invokes_open(
     monkeypatch.setattr(
         skill,
         "_get_dialog",
-        lambda hwnd: (
-            dialog
-        ),
+        lambda hwnd: dialog,
     )
 
     monkeypatch.setattr(
@@ -380,10 +352,8 @@ def test_open_flow_sets_path_and_invokes_open(
         lambda hwnd: True,
     )
 
-    response = (
-        skill.execute(
-            f"choose file {source}"
-        )
+    response = skill.execute(
+        f"choose file {source}"
     )
 
     assert (
@@ -414,38 +384,31 @@ def test_save_flow_sets_new_path_and_invokes_save(
     monkeypatch,
     tmp_path,
 ):
-    skill = (
-        FileDialogSkill()
-    )
+    skill = FileDialogSkill()
 
     destination = (
         tmp_path
         / "new-file.txt"
     )
 
-    edit = (
-        FakeControl(
-            name="File name:",
-            control_type="Edit",
-            automation_id="1001",
-        )
+    edit = FakeControl(
+        name="File name:",
+        control_type="Edit",
+        automation_id="1001",
     )
 
-    button = (
-        FakeControl(
-            name="Save",
-            control_type="Button",
-        )
+    button = FakeControl(
+        name="Save",
+        control_type="Button",
+        automation_id="1",
     )
 
-    dialog = (
-        FakeDialog(
-            title="Save As",
-            controls=[
-                edit,
-                button,
-            ],
-        )
+    dialog = FakeDialog(
+        title="Save As",
+        controls=[
+            edit,
+            button,
+        ],
     )
 
     monkeypatch.setattr(
@@ -457,9 +420,7 @@ def test_save_flow_sets_new_path_and_invokes_save(
     monkeypatch.setattr(
         skill,
         "_get_dialog",
-        lambda hwnd: (
-            dialog
-        ),
+        lambda hwnd: dialog,
     )
 
     monkeypatch.setattr(
@@ -468,10 +429,8 @@ def test_save_flow_sets_new_path_and_invokes_save(
         lambda hwnd: True,
     )
 
-    response = (
-        skill.execute(
-            f"save file as {destination}"
-        )
+    response = skill.execute(
+        f"save file as {destination}"
     )
 
     assert (
