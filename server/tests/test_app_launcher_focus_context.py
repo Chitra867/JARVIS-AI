@@ -98,11 +98,11 @@ def test_get_focus_context_returns_only_matching_launch_command():
 
 
 # ======================================================
-# SAME PROCESS FOREGROUND
+# OWNED SAME-PROCESS FOREGROUND
 # ======================================================
 
 
-def test_recover_focus_context_preserves_same_process_foreground(
+def test_recover_focus_context_preserves_owned_same_process_foreground(
     monkeypatch,
 ):
     skill = (
@@ -113,6 +113,8 @@ def test_recover_focus_context_preserves_same_process_foreground(
         _context()
     )
 
+    popup_hwnd = 999
+
     monkeypatch.setattr(
         (
             launcher_module
@@ -121,9 +123,25 @@ def test_recover_focus_context_preserves_same_process_foreground(
         "get_foreground_window_info",
         lambda: (
             _window(
-                hwnd=999,
+                hwnd=popup_hwnd,
                 title="File menu",
             )
+        ),
+    )
+
+    # GW_OWNER = 4.
+    # The popup is valid only because it is explicitly
+    # owned by the original verified workflow window.
+    monkeypatch.setattr(
+        launcher_module.win32gui,
+        "GetWindow",
+        lambda hwnd, relationship: (
+            context.hwnd
+            if (
+                hwnd == popup_hwnd
+                and relationship == 4
+            )
+            else 0
         ),
     )
 
@@ -400,7 +418,6 @@ def test_wait_until_ready_captures_focus_context(
         ),
     )
 
-    # Correct pytest monkeypatch usage.
     monkeypatch.setattr(
         launcher_module.time,
         "sleep",

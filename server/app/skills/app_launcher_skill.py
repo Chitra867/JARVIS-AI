@@ -8,6 +8,10 @@ from dataclasses import (
     dataclass,
 )
 
+from urllib.parse import (
+    urlparse,
+)
+
 from pathlib import (
     Path,
 )
@@ -162,6 +166,22 @@ class AppLauncherSkill(
             "chrome.exe",
         ],
 
+        "edge": [
+            "msedge.exe",
+        ],
+
+        "microsoft edge": [
+            "msedge.exe",
+        ],
+
+        "firefox": [
+            "firefox.exe",
+        ],
+
+        "brave": [
+            "brave.exe",
+        ],
+
         "powershell": [
             "powershell.exe",
             "pwsh.exe",
@@ -245,6 +265,22 @@ class AppLauncherSkill(
 
         "chrome": {
             "chrome.exe",
+        },
+
+        "edge": {
+            "msedge.exe",
+        },
+
+        "microsoft edge": {
+            "msedge.exe",
+        },
+
+        "firefox": {
+            "firefox.exe",
+        },
+
+        "brave": {
+            "brave.exe",
         },
 
         "powershell": {
@@ -331,6 +367,22 @@ class AppLauncherSkill(
 
         "chrome": {
             "chrome.exe",
+        },
+
+        "edge": {
+            "msedge.exe",
+        },
+
+        "microsoft edge": {
+            "msedge.exe",
+        },
+
+        "firefox": {
+            "firefox.exe",
+        },
+
+        "brave": {
+            "brave.exe",
         },
 
         "powershell": {
@@ -539,6 +591,62 @@ class AppLauncherSkill(
             return (
                 f"Opening "
                 f"{normalized_target}."
+            )
+
+        # =================================================
+        # EXPLICIT HTTP / HTTPS URL
+        # =================================================
+
+        explicit_url = (
+            self._resolve_web_url(
+                target
+            )
+        )
+
+        if (
+            explicit_url
+            is not None
+        ):
+            try:
+                opened = (
+                    webbrowser.open(
+                        explicit_url
+                    )
+                )
+
+            except (
+                OSError,
+                webbrowser.Error,
+            ):
+                return (
+                    "I couldn't open "
+                    "that web address."
+                )
+
+            if (
+                opened
+                is False
+            ):
+                return (
+                    "I couldn't open "
+                    "that web address."
+                )
+
+            self._record_launch(
+                command=clean_command,
+                target=explicit_url,
+                kind="website",
+                process_names=(
+                    self.BROWSER_PROCESS_NAMES
+                ),
+                previous_foreground_hwnd=(
+                    previous_hwnd
+                ),
+            )
+
+            return (
+                f"Opening "
+                f"{explicit_url}."
             )
 
         # =================================================
@@ -904,12 +1012,13 @@ class AppLauncherSkill(
             )
 
         # -------------------------------------------------
-        # If the current foreground window still belongs
-        # to the exact same process, do not force the main
-        # window to the front.
+        # Accept the current foreground without refocusing
+        # only when it is the exact verified workflow HWND
+        # or an owned same-process popup belonging to it.
         #
-        # This preserves legitimate same-process UI states
-        # such as menus, popups and tab surfaces.
+        # Same-process identity alone is not enough because
+        # browsers and other applications can have multiple
+        # unrelated top-level windows in the same process.
         # -------------------------------------------------
 
         foreground = (
@@ -918,16 +1027,10 @@ class AppLauncherSkill(
         )
 
         if (
-            foreground
-            is not None
-            and foreground.process_id
-            == context.process_id
-            and foreground.process_name
-            .strip()
-            .lower()
-            == context.process_name
-            .strip()
-            .lower()
+            self._foreground_belongs_to_focus_context(
+                foreground=foreground,
+                context=context,
+            )
         ):
             return (
                 True,
@@ -1016,6 +1119,124 @@ class AppLauncherSkill(
                 "safely restored to the foreground."
             ),
         )
+
+    # =====================================================
+    # FOREGROUND BELONGS TO FOCUS CONTEXT
+    # =====================================================
+
+    def _foreground_belongs_to_focus_context(
+        self,
+        *,
+        foreground,
+        context: LaunchFocusContext,
+    ) -> bool:
+        if (
+            foreground
+            is None
+        ):
+            return False
+
+        if (
+            foreground.process_id
+            != context.process_id
+        ):
+            return False
+
+        if (
+            foreground.process_name
+            .strip()
+            .lower()
+            != context.process_name
+            .strip()
+            .lower()
+        ):
+            return False
+
+        if (
+            foreground.hwnd
+            == context.hwnd
+        ):
+            return True
+
+        return (
+            self._window_is_owned_by(
+                child_hwnd=(
+                    foreground.hwnd
+                ),
+                owner_hwnd=(
+                    context.hwnd
+                ),
+            )
+        )
+
+    # =====================================================
+    # WINDOW OWNERSHIP
+    # =====================================================
+
+    def _window_is_owned_by(
+        self,
+        *,
+        child_hwnd: int,
+        owner_hwnd: int,
+    ) -> bool:
+        if (
+            not child_hwnd
+            or not owner_hwnd
+            or child_hwnd
+            == owner_hwnd
+        ):
+            return False
+
+        current = (
+            child_hwnd
+        )
+
+        visited: set[
+            int
+        ] = set()
+
+        # Win32 GW_OWNER = 4
+        for _ in range(
+            16
+        ):
+            if (
+                current
+                in visited
+            ):
+                return False
+
+            visited.add(
+                current
+            )
+
+            try:
+                owner = int(
+                    win32gui.GetWindow(
+                        current,
+                        4,
+                    )
+                    or 0
+                )
+
+            except Exception:
+                return False
+
+            if not (
+                owner
+            ):
+                return False
+
+            if (
+                owner
+                == owner_hwnd
+            ):
+                return True
+
+            current = (
+                owner
+            )
+
+        return False
 
     # =====================================================
     # CAPTURE WORKFLOW FOCUS CONTEXT
@@ -1538,6 +1759,77 @@ class AppLauncherSkill(
         )
 
     # =====================================================
+    # EXPLICIT WEB URL
+    # =====================================================
+
+    def _resolve_web_url(
+        self,
+        target: str,
+    ) -> str | None:
+        candidate = (
+            target
+            .strip()
+            .strip(
+                "\"'"
+            )
+        )
+
+        if not (
+            candidate
+        ):
+            return None
+
+        try:
+            parsed = (
+                urlparse(
+                    candidate
+                )
+            )
+
+            scheme = (
+                parsed.scheme
+                .strip()
+                .lower()
+            )
+
+            if (
+                scheme
+                not in {
+                    "http",
+                    "https",
+                }
+            ):
+                return None
+
+            if not (
+                parsed.netloc
+            ):
+                return None
+
+            if (
+                parsed.username
+                is not None
+                or parsed.password
+                is not None
+            ):
+                return None
+
+            if not (
+                parsed.hostname
+            ):
+                return None
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        return (
+            candidate
+        )
+
+    # =====================================================
     # EXISTING PATH
     # =====================================================
 
@@ -1762,6 +2054,164 @@ class AppLauncherSkill(
                         str(
                             path
                         )
+                    )
+
+        # =================================================
+        # MICROSOFT EDGE FALLBACK
+        # =================================================
+
+        if (
+            app_name
+            in {
+                "edge",
+                "microsoft edge",
+            }
+        ):
+            paths = [
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles(x86)",
+                            "",
+                        )
+                    )
+                    / "Microsoft"
+                    / "Edge"
+                    / "Application"
+                    / "msedge.exe"
+                ),
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles",
+                            "",
+                        )
+                    )
+                    / "Microsoft"
+                    / "Edge"
+                    / "Application"
+                    / "msedge.exe"
+                ),
+                (
+                    Path(
+                        os.getenv(
+                            "LOCALAPPDATA",
+                            "",
+                        )
+                    )
+                    / "Microsoft"
+                    / "Edge"
+                    / "Application"
+                    / "msedge.exe"
+                ),
+            ]
+
+            for path in (
+                paths
+            ):
+                if (
+                    path.exists()
+                ):
+                    return str(
+                        path
+                    )
+
+        # =================================================
+        # FIREFOX FALLBACK
+        # =================================================
+
+        if (
+            app_name
+            == "firefox"
+        ):
+            paths = [
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles",
+                            "",
+                        )
+                    )
+                    / "Mozilla Firefox"
+                    / "firefox.exe"
+                ),
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles(x86)",
+                            "",
+                        )
+                    )
+                    / "Mozilla Firefox"
+                    / "firefox.exe"
+                ),
+            ]
+
+            for path in (
+                paths
+            ):
+                if (
+                    path.exists()
+                ):
+                    return str(
+                        path
+                    )
+
+        # =================================================
+        # BRAVE FALLBACK
+        # =================================================
+
+        if (
+            app_name
+            == "brave"
+        ):
+            paths = [
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles",
+                            "",
+                        )
+                    )
+                    / "BraveSoftware"
+                    / "Brave-Browser"
+                    / "Application"
+                    / "brave.exe"
+                ),
+                (
+                    Path(
+                        os.getenv(
+                            "ProgramFiles(x86)",
+                            "",
+                        )
+                    )
+                    / "BraveSoftware"
+                    / "Brave-Browser"
+                    / "Application"
+                    / "brave.exe"
+                ),
+                (
+                    Path(
+                        os.getenv(
+                            "LOCALAPPDATA",
+                            "",
+                        )
+                    )
+                    / "BraveSoftware"
+                    / "Brave-Browser"
+                    / "Application"
+                    / "brave.exe"
+                ),
+            ]
+
+            for path in (
+                paths
+            ):
+                if (
+                    path.exists()
+                ):
+                    return str(
+                        path
                     )
 
         # =================================================
