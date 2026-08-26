@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import tempfile
 import time
@@ -64,12 +65,41 @@ app = FastAPI(
 # CORS
 # =========================================================
 
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+)
+
+
+def get_cors_origins() -> list[str]:
+    raw_origins = os.getenv(
+        "JARVIS_CORS_ORIGINS",
+        "",
+    ).strip()
+
+    if not raw_origins:
+        return list(
+            DEFAULT_CORS_ORIGINS
+        )
+
+    origins = [
+        origin.strip()
+        for origin
+        in raw_origins.split(",")
+        if origin.strip()
+    ]
+
+    return (
+        origins
+        or list(
+            DEFAULT_CORS_ORIGINS
+        )
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
