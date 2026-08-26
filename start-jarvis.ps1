@@ -2,13 +2,14 @@ $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerDir = Join-Path $ProjectRoot "server"
-$HudDir = Join-Path $ProjectRoot "hud"
+$HudDistDir = Join-Path $ProjectRoot "hud\dist"
+$HudIndex = Join-Path $HudDistDir "index.html"
 $PythonExe = Join-Path $ServerDir ".venv\Scripts\python.exe"
 $RuntimeDir = Join-Path $env:TEMP "jarvis-os"
 $StateFile = Join-Path $RuntimeDir "runtime.json"
 
-$BackendUrl = "http://127.0.0.1:8000/health"
-$HudUrl = "http://127.0.0.1:5173/"
+$BackendHealthUrl = "http://127.0.0.1:8000/health"
+$JarvisUrl = "http://127.0.0.1:8000/"
 $OllamaUrl = "http://127.0.0.1:11434/api/tags"
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
@@ -76,22 +77,16 @@ if (-not (Test-Path $PythonExe)) {
     )
 }
 
-$NpmCommand = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
-
-if (-not $NpmCommand) {
-    throw "npm.cmd was not found. Install Node.js and reopen PowerShell."
-}
-
-if (-not (Test-Path (Join-Path $HudDir "node_modules"))) {
+if (-not (Test-Path $HudIndex)) {
     throw (
-        "HUD dependencies are missing. Run: cd `"$HudDir`"; npm install"
+        "Production HUD was not found at: $HudIndex`n" +
+        "Build it first with: cd `"$ProjectRoot\hud`"; npm run build"
     )
 }
 
 $state = [ordered]@{
     startedAt = (Get-Date).ToString("o")
     backendPid = $null
-    hudPid = $null
     ollamaPid = $null
 }
 
@@ -159,10 +154,10 @@ catch {
 }
 
 # ------------------------------------------------------------
-# BACKEND
+# JARVIS BACKEND + PRODUCTION HUD
 # ------------------------------------------------------------
 
-if (-not (Test-HttpEndpoint -Url $BackendUrl)) {
+if (-not (Test-HttpEndpoint -Url $BackendHealthUrl)) {
     $backendOut = Join-Path $RuntimeDir "backend.out.log"
     $backendErr = Join-Path $RuntimeDir "backend.err.log"
 
@@ -187,7 +182,7 @@ if (-not (Test-HttpEndpoint -Url $BackendUrl)) {
 
     $state.backendPid = $backendProcess.Id
 
-    if (-not (Wait-HttpEndpoint -Url $BackendUrl -TimeoutSeconds 25)) {
+    if (-not (Wait-HttpEndpoint -Url $BackendHealthUrl -TimeoutSeconds 25)) {
         Show-LogTail -Path $backendOut
         Show-LogTail -Path $backendErr
         throw "JARVIS backend did not become ready."
@@ -197,35 +192,8 @@ else {
     Write-Host "Backend already running." -ForegroundColor DarkGray
 }
 
-# ------------------------------------------------------------
-# HUD
-# ------------------------------------------------------------
-
-if (-not (Test-HttpEndpoint -Url $HudUrl)) {
-    $hudOut = Join-Path $RuntimeDir "hud.out.log"
-    $hudErr = Join-Path $RuntimeDir "hud.err.log"
-
-    Remove-Item $hudOut, $hudErr -Force -ErrorAction SilentlyContinue
-
-    $hudProcess = Start-Process `
-        -FilePath $NpmCommand.Source `
-        -ArgumentList @("run", "dev") `
-        -WorkingDirectory $HudDir `
-        -RedirectStandardOutput $hudOut `
-        -RedirectStandardError $hudErr `
-        -WindowStyle Hidden `
-        -PassThru
-
-    $state.hudPid = $hudProcess.Id
-
-    if (-not (Wait-HttpEndpoint -Url $HudUrl -TimeoutSeconds 20)) {
-        Show-LogTail -Path $hudOut
-        Show-LogTail -Path $hudErr
-        throw "JARVIS HUD did not become ready."
-    }
-}
-else {
-    Write-Host "HUD already running." -ForegroundColor DarkGray
+if (-not (Wait-HttpEndpoint -Url $JarvisUrl -TimeoutSeconds 5)) {
+    throw "JARVIS HUD did not become reachable through FastAPI."
 }
 
 $state |
@@ -236,9 +204,9 @@ $state |
 
 Write-Host ""
 Write-Host "JARVIS OS is ready." -ForegroundColor Green
-Write-Host "Backend: http://127.0.0.1:8000" -ForegroundColor Cyan
-Write-Host "HUD:     http://127.0.0.1:5173" -ForegroundColor Cyan
+Write-Host "JARVIS:  $JarvisUrl" -ForegroundColor Cyan
+Write-Host "API:     http://127.0.0.1:8000/api" -ForegroundColor Cyan
 Write-Host "Logs:    $RuntimeDir" -ForegroundColor DarkGray
 Write-Host ""
 
-Start-Process $HudUrl
+Start-Process $JarvisUrl

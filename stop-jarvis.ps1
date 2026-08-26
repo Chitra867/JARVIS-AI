@@ -31,10 +31,9 @@ function Stop-ProcessTree {
     & taskkill.exe /PID $ProcessId /T /F | Out-Null
 }
 
-Stop-ProcessTree -ProcessId $state.hudPid -Name "JARVIS HUD"
 Stop-ProcessTree -ProcessId $state.backendPid -Name "JARVIS backend"
 
-# Stop Ollama only if this launcher started it.
+# Stop Ollama only when this launcher started it.
 Stop-ProcessTree -ProcessId $state.ollamaPid -Name "Ollama"
 
 Remove-Item $StateFile -Force -ErrorAction SilentlyContinue

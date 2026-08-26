@@ -52,6 +52,28 @@ from app.models.command import (
 
 
 # =========================================================
+# PATHS
+# =========================================================
+
+PROJECT_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parents[2]
+)
+
+HUD_DIST_DIR = (
+    PROJECT_ROOT
+    / "hud"
+    / "dist"
+)
+
+HUD_INDEX_FILE = (
+    HUD_DIST_DIR
+    / "index.html"
+)
+
+
+# =========================================================
 # APPLICATION
 # =========================================================
 
@@ -134,15 +156,24 @@ def delete_temp_file(
 # ROOT
 # =========================================================
 
-@app.get("/")
-async def root() -> dict[
-    str,
-    str,
-]:
+@app.get(
+    "/",
+    response_model=None,
+)
+async def root():
+    if HUD_INDEX_FILE.is_file():
+        return FileResponse(
+            path=str(
+                HUD_INDEX_FILE
+            ),
+            media_type="text/html",
+        )
+
     return {
         "name": "JARVIS",
         "status": "online",
         "version": "1.0.0",
+        "hud": "not-built",
     }
 
 
@@ -522,3 +553,65 @@ async def wakeword_websocket(
 
         except Exception:
             pass
+
+# =========================================================
+# PRODUCTION HUD STATIC FILES
+# =========================================================
+#
+# Keep this catch-all LAST so API and WebSocket routes above
+# always take precedence.
+# =========================================================
+
+@app.get(
+    "/{resource_path:path}",
+    include_in_schema=False,
+    response_model=None,
+)
+async def serve_hud_resource(
+    resource_path: str,
+):
+    if not HUD_DIST_DIR.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="JARVIS HUD is not built.",
+        )
+
+    dist_root = (
+        HUD_DIST_DIR
+        .resolve()
+    )
+
+    candidate = (
+        HUD_DIST_DIR
+        / resource_path
+    ).resolve()
+
+    try:
+        candidate.relative_to(
+            dist_root
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Resource not found.",
+        ) from error
+
+    if candidate.is_file():
+        return FileResponse(
+            path=str(
+                candidate
+            )
+        )
+
+    if HUD_INDEX_FILE.is_file():
+        return FileResponse(
+            path=str(
+                HUD_INDEX_FILE
+            ),
+            media_type="text/html",
+        )
+
+    raise HTTPException(
+        status_code=404,
+        detail="Resource not found.",
+    )

@@ -10,7 +10,31 @@ export interface VoiceCommandResponse {
   success: boolean;
 }
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+function getApiBaseUrl(): string {
+  const configuredUrl =
+    import.meta.env.VITE_JARVIS_API_URL?.trim();
+
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, "");
+  }
+
+  // During Vite development the HUD runs on :5173 while
+  // FastAPI runs on :8000. In the production build FastAPI
+  // serves the HUD itself, so use the current origin.
+  if (
+    window.location.hostname === "127.0.0.1"
+    || window.location.hostname === "localhost"
+  ) {
+    if (window.location.port === "5173") {
+      return "http://127.0.0.1:8000";
+    }
+  }
+
+  return window.location.origin;
+}
+
+const API_BASE_URL =
+  getApiBaseUrl();
 
 export async function sendCommand(
   command: string,
