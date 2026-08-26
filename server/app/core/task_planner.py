@@ -96,6 +96,10 @@ class TaskPlanner:
         r"|pause"
         r"|resume"
         r"|stop"
+        r"|browser\s+search"
+        r"|search\s+browser"
+        r"|navigate"
+        r"|go\s+to"
         r"|search"
         r"|find"
         r"|show"
@@ -543,6 +547,34 @@ class TaskPlanner:
                 continue
 
             # =================================================
+            # OPEN / LAUNCH OTHER SUPPORTED BROWSERS
+            # =================================================
+
+            if normalized in {
+                "open edge",
+                "launch edge",
+                "start edge",
+                "open microsoft edge",
+                "launch microsoft edge",
+                "start microsoft edge",
+                "open firefox",
+                "launch firefox",
+                "start firefox",
+                "open brave",
+                "launch brave",
+                "start brave",
+            }:
+                active_search_provider = (
+                    "browser"
+                )
+
+                contextual_steps.append(
+                    cleaned
+                )
+
+                continue
+
+            # =================================================
             # EXPLICIT YOUTUBE SEARCH
             # =================================================
 
@@ -578,6 +610,34 @@ class TaskPlanner:
             ):
                 active_search_provider = (
                     "google"
+                )
+
+                contextual_steps.append(
+                    cleaned
+                )
+
+                continue
+
+            # =================================================
+            # EXPLICIT BROWSER SEARCH
+            # =================================================
+
+            if (
+                normalized.startswith(
+                    "browser search for "
+                )
+                or normalized.startswith(
+                    "browser search "
+                )
+                or normalized.startswith(
+                    "search browser for "
+                )
+                or normalized.startswith(
+                    "search browser "
+                )
+            ):
+                active_search_provider = (
+                    "browser"
                 )
 
                 contextual_steps.append(
@@ -663,12 +723,15 @@ class TaskPlanner:
                 continue
 
             # -------------------------------------------------
-            # Google / Chrome context
+            # Generic web search
             # -------------------------------------------------
             #
-            # Generic SearchSkill already defaults normal web
-            # searches appropriately, so no command rewrite is
-            # necessary here.
+            # Keep ordinary "search ..." commands unchanged.
+            # SearchSkill owns generic web-search semantics.
+            #
+            # BrowserNavigationSkill is used only when the user
+            # explicitly says "browser search ..." or
+            # "search browser ...".
             # -------------------------------------------------
 
             contextual_steps.append(

@@ -14,6 +14,10 @@ from app.skills.base import (
     Skill,
 )
 
+from app.skills.browser_navigation_skill import (
+    BrowserNavigationSkill,
+)
+
 from app.skills.file_dialog_skill import (
     FileDialogSkill,
 )
@@ -95,6 +99,10 @@ class SkillRegistry:
             SystemSkill(),
 
             VisualTargetSkill(),
+
+            # Browser-specific navigation/search must route
+            # before the general web SearchSkill.
+            BrowserNavigationSkill(),
 
             SearchSkill(),
 
