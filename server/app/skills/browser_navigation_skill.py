@@ -33,6 +33,53 @@ class BrowserNavigationSkill(
     MAX_QUERY_LENGTH = 500
     TYPE_INTERVAL_SECONDS = 0.01
 
+    CONTROL_SHORTCUTS = {
+        "browser back": (
+            "alt",
+            "left",
+        ),
+        "browser forward": (
+            "alt",
+            "right",
+        ),
+        "refresh browser": (
+            "ctrl",
+            "r",
+        ),
+        "browser refresh": (
+            "ctrl",
+            "r",
+        ),
+        "open new tab": (
+            "ctrl",
+            "t",
+        ),
+        "new browser tab": (
+            "ctrl",
+            "t",
+        ),
+    }
+
+    CONTROL_MESSAGES = {
+        "browser back":
+            "Browser moved back.",
+
+        "browser forward":
+            "Browser moved forward.",
+
+        "refresh browser":
+            "Browser refreshed.",
+
+        "browser refresh":
+            "Browser refreshed.",
+
+        "open new tab":
+            "Opened a new browser tab.",
+
+        "new browser tab":
+            "Opened a new browser tab.",
+    }
+
     NAVIGATE_PATTERN = re.compile(
         (
             r"^(?:navigate|go)\s+to\s+"
@@ -69,8 +116,18 @@ class BrowserNavigationSkill(
         ):
             return False
 
+        normalized = (
+            " ".join(
+                clean
+                .lower()
+                .split()
+            )
+        )
+
         return (
-            self.NAVIGATE_PATTERN
+            normalized
+            in self.CONTROL_SHORTCUTS
+            or self.NAVIGATE_PATTERN
             .fullmatch(
                 clean
             )
@@ -90,6 +147,24 @@ class BrowserNavigationSkill(
             command
             .strip()
         )
+
+        normalized = (
+            " ".join(
+                clean
+                .lower()
+                .split()
+            )
+        )
+
+        if (
+            normalized
+            in self.CONTROL_SHORTCUTS
+        ):
+            return (
+                self._execute_browser_control(
+                    command=normalized,
+                )
+            )
 
         navigate_match = (
             self.NAVIGATE_PATTERN
@@ -181,6 +256,65 @@ class BrowserNavigationSkill(
         return (
             "I couldn't understand that "
             "browser navigation command."
+        )
+
+    def _execute_browser_control(
+        self,
+        *,
+        command: str,
+    ) -> str:
+        window = (
+            self._get_verified_browser_window()
+        )
+
+        if (
+            window
+            is None
+        ):
+            return (
+                "I couldn't safely control the "
+                "browser because a supported browser "
+                "is not the verified foreground window."
+            )
+
+        expected_hwnd = (
+            window.hwnd
+        )
+
+        shortcut = (
+            self.CONTROL_SHORTCUTS[
+                command
+            ]
+        )
+
+        try:
+            pyautogui.hotkey(
+                *shortcut
+            )
+
+        except (
+            pyautogui.FailSafeException,
+            OSError,
+        ):
+            return (
+                "I couldn't safely perform that "
+                "browser control."
+            )
+
+        if not (
+            self._same_verified_browser_window(
+                expected_hwnd
+            )
+        ):
+            return (
+                "The browser window changed during "
+                "the browser control."
+            )
+
+        return (
+            self.CONTROL_MESSAGES[
+                command
+            ]
         )
 
     def _submit_address_bar_text(
