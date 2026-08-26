@@ -31,6 +31,9 @@ const FOLLOW_UP_TIMEOUT = 6000;
 const TTS_API_URL =
   "http://127.0.0.1:8000/api/tts";
 
+const TTS_REQUEST_TIMEOUT = 10000;
+const FALLBACK_SPEECH_TIMEOUT = 30000;
+
 
 const END_CONVERSATION_PHRASES = new Set([
   "thanks",
@@ -102,6 +105,17 @@ function App() {
   const wakeHandlerRef =
     useRef<() => void>(() => {});
 
+  const lifecycleRef =
+    useRef(0);
+
+  const enableBusyRef =
+    useRef(false);
+
+  const activeRecorderStopRef =
+    useRef<(() => void) | null>(
+      null,
+    );
+
 
   // =====================================================
   // NEURAL TTS AUDIO REFS
@@ -122,17 +136,47 @@ function App() {
       null,
     );
 
+  const audioPlaybackResolveRef =
+    useRef<(() => void) | null>(
+      null,
+    );
+
+  const fallbackSpeechResolveRef =
+    useRef<(() => void) | null>(
+      null,
+    );
+
+  const speechGenerationRef =
+    useRef(0);
+
 
   // =====================================================
   // STOP CURRENT SPEECH
   // =====================================================
 
   const stopSpeech = () => {
-    // Cancel an in-progress TTS download.
+    // Invalidate all callbacks belonging to the current
+    // speech generation before stopping any async work.
+    speechGenerationRef.current += 1;
+
+    // Cancel an in-progress neural TTS download.
     if (ttsAbortRef.current) {
       ttsAbortRef.current.abort();
 
       ttsAbortRef.current = null;
+    }
+
+    // Resolve any pending audio playback wait immediately.
+    if (
+      audioPlaybackResolveRef.current
+    ) {
+      const resolvePlayback =
+        audioPlaybackResolveRef.current;
+
+      audioPlaybackResolveRef.current =
+        null;
+
+      resolvePlayback();
     }
 
     // Stop currently playing neural audio.
@@ -157,8 +201,22 @@ function App() {
       audioUrlRef.current = null;
     }
 
-    // Browser TTS is no longer the primary engine,
-    // but cancel any legacy speech that may exist.
+    // Resolve a pending browser-TTS fallback wait before
+    // cancelling speechSynthesis. Some browsers do not fire
+    // onend after cancel(), which can otherwise deadlock the
+    // conversation loop.
+    if (
+      fallbackSpeechResolveRef.current
+    ) {
+      const resolveFallback =
+        fallbackSpeechResolveRef.current;
+
+      fallbackSpeechResolveRef.current =
+        null;
+
+      resolveFallback();
+    }
+
     if (
       "speechSynthesis"
       in window
@@ -182,6 +240,7 @@ function App() {
 
   const speakFallback = (
     text: string,
+    generation: number,
   ): Promise<void> => {
     return new Promise(
       (resolve) => {
@@ -191,6 +250,8 @@ function App() {
             "speechSynthesis"
             in window
           )
+          || speechGenerationRef.current
+            !== generation
         ) {
           resolve();
 
@@ -208,31 +269,77 @@ function App() {
         utterance.pitch = 0.8;
         utterance.volume = 1;
 
+        let settled = false;
+
+        const finish = () => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+
+          window.clearTimeout(
+            timeoutId,
+          );
+
+          if (
+            fallbackSpeechResolveRef
+              .current
+            === finish
+          ) {
+            fallbackSpeechResolveRef
+              .current = null;
+          }
+
+          utterance.onstart = null;
+          utterance.onend = null;
+          utterance.onerror = null;
+
+          if (
+            mountedRef.current
+            && speechGenerationRef
+              .current
+              === generation
+          ) {
+            setIsSpeaking(false);
+          }
+
+          resolve();
+        };
+
+        const timeoutId =
+          window.setTimeout(
+            finish,
+            FALLBACK_SPEECH_TIMEOUT,
+          );
+
+        fallbackSpeechResolveRef
+          .current = finish;
+
         utterance.onstart = () => {
-          if (mountedRef.current) {
+          if (
+            mountedRef.current
+            && speechGenerationRef
+              .current
+              === generation
+          ) {
             setIsSpeaking(true);
           }
         };
 
-        utterance.onend = () => {
-          if (mountedRef.current) {
-            setIsSpeaking(false);
-          }
+        utterance.onend =
+          finish;
 
-          resolve();
-        };
+        utterance.onerror =
+          finish;
 
-        utterance.onerror = () => {
-          if (mountedRef.current) {
-            setIsSpeaking(false);
-          }
-
-          resolve();
-        };
-
-        window.speechSynthesis.speak(
-          utterance,
-        );
+        try {
+          window.speechSynthesis.speak(
+            utterance,
+          );
+        } catch {
+          finish();
+        }
       },
     );
   };
@@ -252,8 +359,14 @@ function App() {
       return;
     }
 
-    // Stop any previous response first.
+    // Stop any previous response first and establish a new
+    // speech generation. Older async callbacks are not
+    // allowed to clear or revoke resources belonging to
+    // this generation.
     stopSpeech();
+
+    const generation =
+      speechGenerationRef.current;
 
     const controller =
       new AbortController();
@@ -261,8 +374,40 @@ function App() {
     ttsAbortRef.current =
       controller;
 
+    let requestTimedOut =
+      false;
+
+    let localAudio:
+      | HTMLAudioElement
+      | null = null;
+
+    let localAudioUrl:
+      | string
+      | null = null;
+
+    const timeoutId =
+      window.setTimeout(
+        () => {
+          if (
+            ttsAbortRef.current
+            === controller
+          ) {
+            requestTimedOut =
+              true;
+
+            controller.abort();
+          }
+        },
+        TTS_REQUEST_TIMEOUT,
+      );
+
     try {
-      if (mountedRef.current) {
+      if (
+        mountedRef.current
+        && speechGenerationRef
+          .current
+          === generation
+      ) {
         setIsSpeaking(true);
       }
 
@@ -286,6 +431,13 @@ function App() {
           },
         );
 
+      if (
+        speechGenerationRef.current
+        !== generation
+      ) {
+        return;
+      }
+
       if (!ttsResponse.ok) {
         const errorText =
           await ttsResponse.text();
@@ -304,6 +456,13 @@ function App() {
         await ttsResponse.blob();
 
       if (
+        speechGenerationRef.current
+        !== generation
+      ) {
+        return;
+      }
+
+      if (
         audioBlob.size <= 0
       ) {
         throw new Error(
@@ -311,54 +470,129 @@ function App() {
         );
       }
 
-      const audioUrl =
+      localAudioUrl =
         URL.createObjectURL(
           audioBlob,
         );
 
       audioUrlRef.current =
-        audioUrl;
+        localAudioUrl;
 
-      const audio =
+      localAudio =
         new Audio(
-          audioUrl,
+          localAudioUrl,
         );
 
       audioRef.current =
-        audio;
+        localAudio;
 
-      audio.preload = "auto";
-      audio.volume = 1;
+      localAudio.preload = "auto";
+      localAudio.volume = 1;
 
       await new Promise<void>(
         (
           resolve,
           reject,
         ) => {
-          audio.onended = () => {
+          let settled = false;
+
+          const finish = (
+            error?: unknown,
+          ) => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+
+            if (
+              audioPlaybackResolveRef
+                .current
+              === cancelPlayback
+            ) {
+              audioPlaybackResolveRef
+                .current = null;
+            }
+
+            if (localAudio) {
+              localAudio.onended =
+                null;
+
+              localAudio.onerror =
+                null;
+            }
+
+            if (error) {
+              reject(
+                error,
+              );
+
+              return;
+            }
+
             resolve();
           };
 
-          audio.onerror = () => {
-            reject(
+          const cancelPlayback =
+            () => {
+              finish();
+            };
+
+          audioPlaybackResolveRef
+            .current =
+            cancelPlayback;
+
+          if (!localAudio) {
+            finish(
               new Error(
-                "Unable to play JARVIS neural audio.",
+                "JARVIS audio player is unavailable.",
               ),
             );
-          };
 
-          audio.play().catch(
-            reject,
+            return;
+          }
+
+          localAudio.onended =
+            () => {
+              finish();
+            };
+
+          localAudio.onerror =
+            () => {
+              finish(
+                new Error(
+                  "Unable to play JARVIS neural audio.",
+                ),
+              );
+            };
+
+          localAudio.play().catch(
+            (error) => {
+              finish(
+                error,
+              );
+            },
           );
         },
       );
     } catch (error) {
-      // Abort is expected when JARVIS is disabled
-      // or another response interrupts speech.
-      if (
+      const aborted =
         error instanceof DOMException
         && error.name ===
-          "AbortError"
+          "AbortError";
+
+      // A manual stop/disable invalidates the generation.
+      // Do not fall back to browser TTS in that case.
+      if (
+        speechGenerationRef.current
+        !== generation
+      ) {
+        return;
+      }
+
+      if (
+        aborted
+        && !requestTimedOut
       ) {
         return;
       }
@@ -368,12 +602,15 @@ function App() {
         error,
       );
 
-      // Keep the assistant usable even if
-      // edge-tts or the internet is unavailable.
       await speakFallback(
         cleanText,
+        generation,
       );
     } finally {
+      window.clearTimeout(
+        timeoutId,
+      );
+
       if (
         ttsAbortRef.current
         === controller
@@ -382,21 +619,36 @@ function App() {
           null;
       }
 
-      if (audioRef.current) {
+      if (
+        audioRef.current
+        === localAudio
+      ) {
         audioRef.current =
           null;
       }
 
-      if (audioUrlRef.current) {
+      if (
+        localAudioUrl
+      ) {
         URL.revokeObjectURL(
-          audioUrlRef.current,
+          localAudioUrl,
         );
 
-        audioUrlRef.current =
-          null;
+        if (
+          audioUrlRef.current
+          === localAudioUrl
+        ) {
+          audioUrlRef.current =
+            null;
+        }
       }
 
-      if (mountedRef.current) {
+      if (
+        mountedRef.current
+        && speechGenerationRef
+          .current
+          === generation
+      ) {
         setIsSpeaking(false);
       }
     }
@@ -531,33 +783,47 @@ function App() {
     conversationBusyRef.current =
       true;
 
-    let wakeWasRunning =
-      false;
+    const lifecycleId =
+      lifecycleRef.current;
+
+    const wakeListener =
+      wakeWordRef.current;
+
+    const wakeWasRunning =
+      enabledRef.current
+      && wakeListener
+        !== null;
 
     try {
       if (
-        enabledRef.current
-        && wakeWordRef.current
+        wakeWasRunning
+        && wakeListener
       ) {
-        wakeWasRunning =
-          true;
-
-        await wakeWordRef.current
-          .stop();
+        await wakeListener.stop();
       }
 
-      setIsLoading(
-        true,
-      );
+      if (
+        mountedRef.current
+      ) {
+        setIsLoading(
+          true,
+        );
 
-      setResponse(
-        "Processing...",
-      );
+        setResponse(
+          "Processing...",
+        );
+      }
 
       const result =
         await sendCommand(
           trimmedCommand,
         );
+
+      if (
+        !mountedRef.current
+      ) {
+        return;
+      }
 
       setCommand(
         "",
@@ -572,26 +838,40 @@ function App() {
         error,
       );
 
-      await respond(
-        "Unable to communicate with JARVIS core.",
-      );
+      if (
+        mountedRef.current
+      ) {
+        await respond(
+          "Unable to communicate with JARVIS core.",
+        );
+      }
     } finally {
-      setIsLoading(
-        false,
-      );
+      if (
+        mountedRef.current
+      ) {
+        setIsLoading(
+          false,
+        );
+      }
 
       conversationBusyRef.current =
         false;
 
+      // Restart only the exact listener that this command
+      // paused. A disable/re-enable cycle may have installed
+      // a newer listener while sendCommand() was awaiting.
       if (
         wakeWasRunning
-        && enabledRef.current
         && mountedRef.current
+        && enabledRef.current
+        && lifecycleRef.current
+          === lifecycleId
         && wakeWordRef.current
+          === wakeListener
+        && wakeListener
       ) {
         try {
-          await wakeWordRef.current
-            .start();
+          await wakeListener.start();
         } catch (error) {
           console.error(
             "Wake listener restart error:",
@@ -745,18 +1025,44 @@ function App() {
           );
         };
 
+        let cleanedUp =
+          false;
+
         const stopRecorder =
           () => {
             if (
               recorder.state
               === "recording"
             ) {
-              recorder.stop();
+              try {
+                recorder.stop();
+              } catch {
+                // Recorder may already be transitioning
+                // to the inactive state.
+              }
             }
           };
 
+        activeRecorderStopRef.current =
+          stopRecorder;
+
         const cleanup =
           async () => {
+            if (cleanedUp) {
+              return;
+            }
+
+            cleanedUp = true;
+
+            if (
+              activeRecorderStopRef
+                .current
+              === stopRecorder
+            ) {
+              activeRecorderStopRef
+                .current = null;
+            }
+
             cancelAnimationFrame(
               animationFrame,
             );
@@ -788,6 +1094,14 @@ function App() {
             ) {
               await audioContext
                 .close();
+            }
+
+            if (
+              mountedRef.current
+            ) {
+              setIsListening(
+                false,
+              );
             }
           };
 
@@ -1054,6 +1368,15 @@ function App() {
           audio,
         );
 
+      if (
+        cancelConversationRef
+          .current
+        || !enabledRef.current
+        || !mountedRef.current
+      ) {
+        return "end";
+      }
+
       const transcript =
         result.transcript
           ?.trim()
@@ -1173,6 +1496,16 @@ function App() {
         return;
       }
 
+      const lifecycleId =
+        lifecycleRef.current;
+
+      const listener =
+        wakeWordRef.current;
+
+      if (!listener) {
+        return;
+      }
+
       conversationBusyRef.current =
         true;
 
@@ -1184,8 +1517,15 @@ function App() {
           "HEY JARVIS DETECTED",
         );
 
-        await wakeWordRef.current
-          ?.stop();
+        await listener.stop();
+
+        if (
+          lifecycleRef.current
+            !== lifecycleId
+          || !enabledRef.current
+        ) {
+          return;
+        }
 
         await runConversation();
       } catch (error) {
@@ -1194,17 +1534,28 @@ function App() {
           error,
         );
 
-        await respond(
-          "Conversation failed.",
-        );
+        if (
+          lifecycleRef.current
+            === lifecycleId
+          && enabledRef.current
+          && mountedRef.current
+        ) {
+          await respond(
+            "Conversation failed.",
+          );
+        }
       } finally {
-        setIsListening(
-          false,
-        );
+        if (
+          mountedRef.current
+        ) {
+          setIsListening(
+            false,
+          );
 
-        setIsLoading(
-          false,
-        );
+          setIsLoading(
+            false,
+          );
+        }
 
         conversationBusyRef.current =
           false;
@@ -1212,24 +1563,39 @@ function App() {
         if (
           mountedRef.current
           && enabledRef.current
+          && lifecycleRef.current
+            === lifecycleId
           && wakeWordRef.current
+            === listener
         ) {
           try {
-            await wakeWordRef.current
-              .start();
+            await listener.start();
 
-            setResponse(
-              'Waiting for "Hey Jarvis"...',
-            );
+            if (
+              mountedRef.current
+              && enabledRef.current
+              && lifecycleRef.current
+                === lifecycleId
+            ) {
+              setResponse(
+                'Waiting for "Hey Jarvis"...',
+              );
+            }
           } catch (error) {
             console.error(
               "Wake listener restart error:",
               error,
             );
 
-            setResponse(
-              "Wake-word listener failed.",
-            );
+            if (
+              mountedRef.current
+              && lifecycleRef.current
+                === lifecycleId
+            ) {
+              setResponse(
+                "Wake-word listener failed.",
+              );
+            }
           }
         }
       }
@@ -1256,9 +1622,30 @@ function App() {
     async () => {
       if (
         enabledRef.current
+        || enableBusyRef.current
       ) {
         return;
       }
+
+      enableBusyRef.current =
+        true;
+
+      const lifecycleId =
+        lifecycleRef.current
+        + 1;
+
+      lifecycleRef.current =
+        lifecycleId;
+
+      const listener =
+        new WakeWordListener(
+          () => {
+            wakeHandlerRef.current();
+          },
+        );
+
+      wakeWordRef.current =
+        listener;
 
       try {
         setResponse(
@@ -1268,17 +1655,29 @@ function App() {
         cancelConversationRef.current =
           false;
 
-        const listener =
-          new WakeWordListener(
-            () => {
-              wakeHandlerRef.current();
-            },
-          );
-
-        wakeWordRef.current =
-          listener;
-
         await listener.start();
+
+        // Disable/unmount may have happened while start()
+        // was awaiting microphone / wake-word setup.
+        if (
+          !mountedRef.current
+          || lifecycleRef.current
+            !== lifecycleId
+          || cancelConversationRef
+            .current
+        ) {
+          await listener.stop();
+
+          if (
+            wakeWordRef.current
+            === listener
+          ) {
+            wakeWordRef.current =
+              null;
+          }
+
+          return;
+        }
 
         enabledRef.current =
           true;
@@ -1296,16 +1695,33 @@ function App() {
           error,
         );
 
+        if (
+          wakeWordRef.current
+          === listener
+        ) {
+          wakeWordRef.current =
+            null;
+        }
+
         enabledRef.current =
           false;
 
-        setIsEnabled(
-          false,
-        );
+        if (
+          mountedRef.current
+          && lifecycleRef.current
+            === lifecycleId
+        ) {
+          setIsEnabled(
+            false,
+          );
 
-        await respond(
-          "Unable to enable hands-free mode.",
-        );
+          await respond(
+            "Unable to enable hands-free mode.",
+          );
+        }
+      } finally {
+        enableBusyRef.current =
+          false;
       }
     };
 
@@ -1316,41 +1732,30 @@ function App() {
 
   const disableJarvis =
     async () => {
+      const listener =
+        wakeWordRef.current;
+
+      lifecycleRef.current += 1;
+
+      cancelConversationRef.current =
+        true;
+
+      enabledRef.current =
+        false;
+
+      // Stop an active microphone recording immediately
+      // instead of waiting for the next animation frame.
+      activeRecorderStopRef.current
+        ?.();
+
+      // Stop neural/browser TTS immediately.
+      stopSpeech();
+
+      wakeWordRef.current =
+        null;
+
       try {
-        cancelConversationRef.current =
-          true;
-
-        enabledRef.current =
-          false;
-
-        // Stop neural TTS immediately.
-        stopSpeech();
-
-        await wakeWordRef.current
-          ?.stop();
-
-        wakeWordRef.current =
-          null;
-
-        setIsEnabled(
-          false,
-        );
-
-        setIsListening(
-          false,
-        );
-
-        setIsSpeaking(
-          false,
-        );
-
-        setIsLoading(
-          false,
-        );
-
-        setResponse(
-          "JARVIS hands-free mode disabled.",
-        );
+        await listener?.stop();
       } catch (error) {
         console.error(
           "Disable JARVIS error:",
@@ -1359,6 +1764,30 @@ function App() {
       } finally {
         conversationBusyRef.current =
           false;
+
+        if (
+          mountedRef.current
+        ) {
+          setIsEnabled(
+            false,
+          );
+
+          setIsListening(
+            false,
+          );
+
+          setIsSpeaking(
+            false,
+          );
+
+          setIsLoading(
+            false,
+          );
+
+          setResponse(
+            "JARVIS hands-free mode disabled.",
+          );
+        }
       }
     };
 
@@ -1375,11 +1804,36 @@ function App() {
       mountedRef.current =
         false;
 
+      lifecycleRef.current += 1;
+
       enabledRef.current =
         false;
 
       cancelConversationRef.current =
         true;
+
+      activeRecorderStopRef.current
+        ?.();
+
+      if (
+        audioPlaybackResolveRef.current
+      ) {
+        audioPlaybackResolveRef.current();
+
+        audioPlaybackResolveRef.current =
+          null;
+      }
+
+      if (
+        fallbackSpeechResolveRef.current
+      ) {
+        fallbackSpeechResolveRef.current();
+
+        fallbackSpeechResolveRef.current =
+          null;
+      }
+
+      speechGenerationRef.current += 1;
 
       if (
         ttsAbortRef.current
