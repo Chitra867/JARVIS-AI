@@ -113,6 +113,7 @@ class TaskExecutor:
             "InputControlSkill",
             "UIAutomationClickSkill",
             "FileDialogSkill",
+            "BrowserNavigationSkill",
         }
     )
 
