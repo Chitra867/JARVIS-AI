@@ -4,3 +4,4 @@ __pycache__/
 
 # JARVIS runtime database
 data/jarvis.db
+release/
